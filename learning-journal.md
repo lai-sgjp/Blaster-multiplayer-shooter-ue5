@@ -346,8 +346,202 @@ C++：核心逻辑、网络同步、性能代码。蓝图：动画、UI、关卡
 
 ---
 
+## 15. Character 蹲伏与移动复制
+
+### 15.1 Crouch 是移动组件处理的请求
+
+`ACharacter::Crouch()` 不会立即修改 `bIsCrouched`，而是先检查 `CanCrouch()`，通过后设置 `CharacterMovement->bWantsToCrouch`。`UCharacterMovementComponent` 在后续移动更新中修改胶囊体并调用 `SetIsCrouched(true)`。
+
+要允许角色蹲伏，需要在角色构造函数中启用移动能力：
+
+```cpp
+GetCharacterMovement()->GetNavAgentPropertiesRef().bCanCrouch = true;
+```
+
+若没有启用，开发构建日志会输出 `crouching is disabled on this character`，此时 Enhanced Input 即使已经正确触发，`bIsCrouched` 也不会变为 `true`。
+
+### 15.2 多人同步职责
+
+- 本地玩家通过 Enhanced Input 调用 `Crouch()` / `UnCrouch()`。
+- 蹲伏属于 CharacterMovement 的预测与网络移动流程，不需要额外编写 Server RPC。
+- `ACharacter::bIsCrouched` 已由引擎声明为 RepNotify 属性，模拟代理通过 `OnRep_IsCrouched()` 更新胶囊和表现。
+- 动画实例只读取 `bIsCrouched`；不要再复制一个重复的动画布尔值。
+
+### 15.3 动画状态机边界
+
+如果动画图先按“是否装备武器”在两个状态机之间切换，而蹲伏状态只存在于 `Equipped` 状态机，则未装备时只会改变胶囊体，不会播放蹲伏动画。必须在当前实际输出的状态机中也配置蹲伏状态，或把通用蹲伏逻辑提到两个分支都能使用的动画层级。
+
+**UE5.6 源码参考：**
+- `Engine/Source/Runtime/Engine/Private/Character.cpp`：`ACharacter::Crouch`
+- `Engine/Source/Runtime/Engine/Private/Components/CharacterMovementComponent.cpp`：`CanCrouchInCurrentState` 与蹲伏状态更新
+- `Engine/Source/Runtime/Engine/Classes/GameFramework/Character.h`：`bIsCrouched`、`OnRep_IsCrouched`
+
+﻿## 16. RPC系统篇
+
+### 16.1 为什么要 RPC？
+
+多人游戏中，每个 Client 的变量修改只对自己可见。要让 Server 和其他 Client 知道某件事发生了，需要主动通知。
+UE 提供了两种互补的机制：
+- **Replicated 变量（UPROPERTY(Replicated)）**：Server → 所有 Clients，单向自动同步。"是什么"
+- **RPC（UFUNCTION(Server/Client/NetMulticast)）**：执行远程代码。"做什么"
+
+### 16.2 RPC 的三种类型
+
+| RPC 类型 | 声明 | 谁调用 | 谁执行 |
+|---|---|---|---|
+| Server RPC | `UFUNCTION(Server, Reliable)` | Client | Server |
+| Client RPC | `UFUNCTION(Client, Reliable)` | Server | 该 Actor 的 Owning Client |
+| NetMulticast RPC | `UFUNCTION(NetMulticast, Reliable)` | Server | 所有机器（Server + 全部 Client） |
+
+### 16.3 `_Implementation` 后缀的由来
+
+声明 RPC 函数后，UHT（Unreal Header Tool）在编译时会自动生成一个**同名分发函数**，负责网络打包和路由。
+开发者需要写的实际逻辑放在 `函数名_Implementation` 中：
+
+```cpp
+// .h — 声明 RPC
+UFUNCTION(Server, Reliable)
+void ServerSetAiming(bool bIsAiming);
+
+// .cpp — 实现 RPC 逻辑（注意 _Implementation 后缀）
+void UCombatComponent::ServerSetAiming_Implementation(bool bIsAiming)
+{
+    bAiming = bIsAiming;
+}
+```
+
+UHT 生成的 `ServerSetAiming` 函数负责：检查调用来源 → 如果是 Client 则打包网络消息 → 发送到 Server → Server 收到后调用 `_Implementation`。
+
+### 16.4 Reliable vs Unreliable
+
+- `Reliable`：保证 RPC 调用一定到达。适合装备、瞄准、射击等关键操作。
+- `Unreliable`：不保证到达，但不会阻塞网络。适合高频但可丢失的数据（如位置更新）。
+
+### 16.5 "双头模式"：本地立即执行 + Server RPC
+
+瞄准代码展示了标准模式：
+```cpp
+void UCombatComponent::SetAiming(bool bIsAiming)
+{
+    bAiming = bIsAiming;            // (A) 本地立即生效
+    ServerSetAiming(bIsAiming);     // (B) 通知 Server
+}
+```
+
+(A) 让本地 Client 立刻获得响应（动画、UI 即时更新），
+(B) 通过 Server RPC 让 Server 也更新 bAiming，然后 Replicated 自动同步给其他 Client。
+
+### 16.6 HasAuthority() 分支模式
+
+装备武器展示了另一种模式：
+```cpp
+void ABlasterCharacter::EKeyPressed()
+{
+    if (HasAuthority())          // 如果已经是 Server
+    {
+        Combat->EquipWeapon(OverlappingWeapon);
+    }
+    else                         // 如果是 Client
+    {
+        ServerEquipButtonPressed();
+    }
+}
+```
+
+区别：Equip 模式**不**先本地执行，而是由 Server 全权决定；Aim 模式本地先执行，Server 随后同步覆盖。
+
+### 16.7 三种网络模式对比
+
+| 功能 | 本地处理 | 通知 Server | 同步给他人 |
+|---|---|---|---|
+| Equip | `HasAuthority()` 判断，不先执行 | Server RPC | EquippedWeapon Replicated |
+| Aim | `bAiming = true` 立即生效 | Server RPC | bAiming Replicated |
+| Crouch | `Crouch()` → CharacterMovement | **不需要自己写 RPC** | bIsCrouched 内置 RepNotify |
+
+**UE5.6 源码参考：**
+- `Engine/Source/Runtime/Engine/Public/Net/UnrealNetwork.h`：`DOREPLIFETIME` 宏定义、`FRepLayout`
+- `Engine/Source/Runtime/Engine/Classes/Engine/ActorChannel.h`：Actor 复制通道
+- `Engine/Source/Runtime/CoreUObject/Public/UObject/CoreNet.h`：RPC 声明相关宏
+
+### 16.8 端到端数据流（以瞄准为例）
+
+1. Client A：右键按下 → `AimButtonPressed()` → `Combat->SetAiming(true)`
+2. Client A：立刻设置本地 `bAiming = true` → 动画系统读到瞄准状态
+3. Client A：调用 `ServerSetAiming(true)` → UHT 分发代码打包为网络消息
+4. Server：收到消息 → `ServerSetAiming_Implementation(true)` → `bAiming = true`
+5. Server：Replicated 检测到 `bAiming` 变化 → 推送给所有 Client
+6. Client B：收到复制 → `bAiming = true` → 动画系统读到瞄准状态
+
+以上就是 **RPC → Server 验证 → Replicated 同步** 的完整链路。
+
+﻿### 16.9 如何广播动画（远程播放）
+
+多人游戏中，一个 Client 的动画需要在其他所有机器上播放，有三种实现方式：
+
+#### 方式 1：Replicated bool 驱动（类似 Aim 模式）
+
+```cpp
+UPROPERTY(Replicated)
+bool bIsReloading;
+```
+
+在动画蓝图中读取这个 bool，切换对应的动画状态。Server 修改后自动同步到所有 Client。
+
+**适用场景**：简单的状态切换动画（瞄准、换弹姿态）。
+**优点**：和你现有的瞄准代码是同一个模式，实现简单。
+**缺点**：只能控制状态切换，无法精确控制 Montage 播放时机。
+
+#### 方式 2：NetMulticast RPC（广播函数调用）
+
+```cpp
+UFUNCTION(NetMulticast, Reliable)
+void MulticastPlayReloadMontage();
+
+void ABlasterCharacter::MulticastPlayReloadMontage_Implementation()
+{
+    PlayAnimMontage(ReloadMontage);  // 所有机器都播放
+}
+```
+
+NetMulticast 是第三种 RPC：由 Server 调用，但**所有机器（Server + 全部 Client）都执行**。
+
+**适用场景**：Montage 播放、粒子特效、声音等需要精确时机的效果。
+**优点**：精确控制播放时机。
+**缺点**：如果 Client 已经预测性地先播了一遍，Server 的 NetMulticast 又播一遍会重复。
+
+#### 方式 3：RepNotify（复制到达时触发回调）
+
+```cpp
+UPROPERTY(ReplicatedUsing = OnRep_Reloading)
+bool bIsReloading;
+
+UFUNCTION()
+void OnRep_Reloading();
+```
+
+变量复制到达 Client 时自动调用 `OnRep_` 函数执行额外逻辑。
+
+**适用场景**：复制到达时需要执行额外逻辑（如修改碰撞、播放音效）。
+**优点**：精确区分"数据到达"和"本地修改"。
+**缺点**：Server 端不触发 OnRep，需要处理 Server 端的单独逻辑。
+
+#### 三种方式选型对比
+
+| 方式 | 你的参考代码 | 适用场景 |
+|------|------------|---------|
+| Replicated bool 驱动 | `bAiming` 模式 | 简单的状态切换动画 |
+| NetMulticast RPC | 尚未写过 | Montage 播放、粒子特效、声音 |
+| RepNotify | `OverlappingWeapon` 模式 | 复制到达时需要执行额外逻辑 |
+
+后续攻击/射击系统通常会组合使用：**NetMulticast RPC + Montage** 实现射击动画，**Replicated 变量** 实现状态同步，**RepNotify** 实现到达时的特效触发。
+
+---
+
 ## 更新记录
 
 | 日期 | 更新内容 |
 | --- | --- |
 | 2026-07-13 | 初始化文档，覆盖全部已实现功能的技术要点 |
+| 2026-07-15 | 增加 Character 蹲伏能力、移动复制与动画状态机排查经验 |
+| 2026-07-15 | 增加 RPC 系统篇 16.9：动画广播的三种实现方式（Replicated bool / NetMulticast RPC / RepNotify）与选型对比 |
+| 2026-07-15 | 增加 RPC 系统篇：三种 RPC 类型、_Implementation 后缀、Reliable vs Unreliable、双头模式、HasAuthority 分支模式、端到端数据流 |
