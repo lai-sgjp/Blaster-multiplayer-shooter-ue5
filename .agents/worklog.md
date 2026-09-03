@@ -1,6 +1,6 @@
-# Blaster 项目工作日志
+# Blaster Worklog
 
-本日志记录 Codex 与项目开发者每轮研讨的检查过程、关键证据、技术决策、代码变更和验证结果，用于在后续协作中恢复工程上下文。记录只追加，不覆盖历史。
+## 历史记录（从根目录 `worklog.md` 迁移）
 
 ---
 
@@ -46,7 +46,6 @@
 - 在装备武器后测试当前 `Equipped` 蹲伏动画；若希望未装备也播放蹲伏动画，需要在 `Unequipped` 状态机增加对应 `CrouchIdle` 及双向规则，或后续统一两套移动状态机的公共蹲伏分支。
 - PIE 至少使用 Listen Server + 1 Client：分别在两个窗口切换蹲伏，确认本机胶囊、对端姿势以及低矮空间下无法站起的碰撞行为。
 
-
 ---
 
 ## 2026-07-15：RPC 概念复盘与教学
@@ -83,3 +82,48 @@
 - agents.md 中复盘教学指令已建立
 - 建议用户先阅读 RPC 系统篇内容，再自行完成练习题
 - 后续用户可继续提问或要求批改练习题答案
+
+---
+
+## 2026-09-01 - B00 基线通过并进入 B01 Gate 0
+
+- 用户确认 Listen Server + 1 Client 的进入、拾取、装备、瞄准和蹲伏验证没有问题。
+- B00 以用户提供的人工 PIE 证据归档为 PASS；本轮没有额外截图或日志附件。
+- 代码盘点确认 AnimInstance 当前只提供 Speed、InAir、Accelerating、WeaponEquipped、Crouched 和 Aiming。
+- Aim Offset、远端 Pitch、Lean、FABRIK 和 Turning in Place 尚未在 C++ 中实现，因此进入 B01。
+- 已生成 B01 Gate 0 任务卡；尚未修改游戏代码或资产。
+- 下一步：先确认动画数据流，再从方向偏移与 Lean 的最小切片开始实施。
+
+---
+
+## 2026-09-03 - 项目文档迁移与 B01 启动准备
+
+### 用户目标和现象
+
+- 确认项目根目录知识/协作文档迁移到 `.agents/`，完成整理并创建本地 commit，暂不 push。
+- 整理完成后进入 B01 动画与网络收尾任务。
+
+### 检查步骤与关键证据
+
+1. 检查 Git 状态：根 `Blaster_Context.md`、`agents.md`、`learning-journal.md` 已删除，`.agents/` 下已有对应迁移版本、工作流文档和 B00/B01 任务卡；根目录新增 `CLAUDE.md`。
+2. 核对迁移内容：`Blaster_Context.md` 完整一致；`agents.md` 为原规则加任务卡工作流增强版；`learning-journal.md` 保留原知识记录并包含新增专题。
+3. 发现根 `worklog.md` 含 2026-07-15 历史，而 `.agents/worklog.md` 含 2026-09-01 B00 记录，已合并保留两部分历史。
+4. 确认根目录 Markdown 仅保留 `CLAUDE.md`，其余项目知识、规则、日志和任务文档均位于 `.agents/`。
+5. staged diff 仅涉及文档迁移/整理，`git diff --cached --check` 无空白错误，未包含游戏代码、资产或配置改动。
+
+### 原因分析和技术决策
+
+- 项目知识库和协作日志统一归档到 `.agents/`；根 `CLAUDE.md` 保留为工具入口，并指向新的文档路径。
+- 不删除任何既有日志历史；以迁移合并方式保留根 `worklog.md` 的全部记录。
+- 本轮只提交文档整理；B01 的游戏代码和资产修改留在后续任务范围内。
+
+### 实际修改的文件与内容
+
+- 新增/迁移 `.agents/BLASTER_ACCELERATED_LEARNING_PLAN.md`、`.agents/Blaster_Context.md`、`.agents/learning-journal.md`、`.agents/worklog.md`、`.agents/tasks/` 下 B00/B01 任务卡。
+- 更新 `.agents/agents.md` 与根 `CLAUDE.md` 中的日志和上下文路径引用。
+- 删除根目录 `Blaster_Context.md`、`agents.md`、`learning-journal.md`、`worklog.md`。
+
+### 验证状态与后续待办
+
+- 文档 staged diff 已检查；待创建本地 commit，不执行 push。
+- 完成 commit 后进入 `TASK-B01-animation-network-finish`，先按 Gate 0 读取真实 C++/动画数据流，再实施白名单内最小切片。

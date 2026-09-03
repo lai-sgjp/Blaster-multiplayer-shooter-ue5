@@ -545,3 +545,55 @@ void OnRep_Reloading();
 | 2026-07-15 | 增加 Character 蹲伏能力、移动复制与动画状态机排查经验 |
 | 2026-07-15 | 增加 RPC 系统篇 16.9：动画广播的三种实现方式（Replicated bool / NetMulticast RPC / RepNotify）与选型对比 |
 | 2026-07-15 | 增加 RPC 系统篇：三种 RPC 类型、_Implementation 后缀、Reliable vs Unreliable、双头模式、HasAuthority 分支模式、端到端数据流 |
+
+## 17. UE5 Persona 动画编辑 - Lean 动画制作
+
+### 17.1 背景：BlendSpace 需要 Lean 变体
+
+在 BlendSpace 中混合跑步动画时，需要为同一运动制作不同方向的倾斜变体（如左倾/右倾），通常通过旋转 root bone 实现。
+
+### 17.2 核心原理：编辑器中的"预览" vs "数据"
+
+在 UE5 的 Persona（Animation Sequence 编辑器）中：
+- **旋转 root bone 只是视口预览**，动画数据未被修改
+- **必须 Add Key** 才能将当前骨骼变换写入动画轨道数据（关键帧）
+- 不加 Key 直接保存，旋转不会被保留
+
+### 17.3 "加点 Key 再删掉"的工作流 Trick
+
+老师的流程：旋转 root bone → Add Key → Remove Key → 另存为新动画。
+
+**为什么这样有效？**
+1. **Add Key**：把 root bone 的旋转变换提交到动画轨道，动画序列内部标记为"已修改"
+2. **Remove Key**：删除显式 keyframe，但变换已被编辑器记录为该动画中 root bone 的"基准状态"
+3. 最终效果：root bone 有旋转偏移但动画中没有多余 keyframe，对 BlendSpace 更友好（避免意外插值）
+
+### 17.4 你的替代方案（同样正确）
+
+```
+1. 保存原始跑步动画为 Run_LeanLeft
+2. 打开 Run_LeanLeft，旋转 root bone
+3. 在首帧（循环动画还需尾帧）Add Key
+4. 保存
+5. 对 Run_LeanRight 重复，旋转方向相反
+```
+
+**两套流程等价**：
+| 方案 | Keyframe | 是否可用 |
+|------|----------|---------|
+| 加 Key 再删（老师 trick） | 无显式 keyframe | 是 |
+| 保留 Key（标准流程） | 有显式 keyframe | 是 |
+
+**给初学者的建议**：先用保留 keyframe 的标准流程，直观理解原理后，如需更"干净"的动画数据再用 trick。
+
+---
+
+## 更新记录
+
+| 日期 | 更新内容 |
+| --- | --- |
+| 2026-07-13 | 初始化文档，覆盖全部已实现功能的技术要点 |
+| 2026-07-15 | 增加 Character 蹲伏能力、移动复制与动画状态机排査经验 |
+| 2026-07-15 | 增加 RPC 系统篇 16.9：动画广播的三种实现方式与选型对比 |
+| 2026-07-15 | 增加 RPC 系统篇：三种 RPC 类型、_Implementation 后缀、Reliable vs Unreliable、双头模式、HasAuthority 分支模式、端到端数据流 |
+| 2026-07-15 | 增加第 17 节：Persona Lean 动画制作原理与工作流对比 |
