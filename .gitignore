@@ -31,3 +31,7 @@ __pycache__/
 
 # Logs
 *.log
+
+# Local Unreal MCP snapshots and staging copies
+.codex/unreal-mcp.zip
+.codex/unreal-mcp-stage/

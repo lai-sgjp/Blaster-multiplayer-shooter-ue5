@@ -26,6 +26,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
 	UInputMappingContext* BlasterMappingContext;
@@ -46,6 +47,12 @@ protected:
 	UInputAction* CrouchAction;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
 	UInputAction* AimAction;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	UInputAction* ReloadAction;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	UInputAction* SwapAction;
+	UPROPERTY(EditDefaultsOnly, Category = Combat)
+	TSubclassOf<class AWeapon> DefaultWeaponClass;
 
 	/**
 	* Callback for Input
@@ -55,10 +62,32 @@ protected:
 	void EKeyPressed();
 	void CrouchButtonPressed();
 	void Attack();
+	void StopAttack();
+	void ReloadButtonPressed();
+	void SwapButtonPressed();
 	void AimButtonPressed();
 	void AimButtonReleased();
 
 private:
+	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<class ULagCompensationComponent> LagCompensation;
+	UPROPERTY(Replicated, VisibleInstanceOnly, Category = Stats)
+	float Health = 100.f;
+	UPROPERTY(ReplicatedUsing = OnRep_Eliminated, VisibleInstanceOnly, Category = Stats)
+	bool bEliminated = false;
+	FTimerHandle RespawnTimer;
+	FTimerHandle SpeedTimer;
+	UPROPERTY(ReplicatedUsing = OnRep_MoveSpeed, VisibleInstanceOnly, Category = Buff)
+	float MoveSpeed = 600.f;
+	UFUNCTION()
+	void OnRep_MoveSpeed();
+	void ResetMoveSpeed();
+	UFUNCTION()
+	void ReceiveDamage(AActor* DamagedActor, float Damage, const class UDamageType* DamageType,
+		AController* InstigatorController, AActor* DamageCauser);
+	UFUNCTION()
+	void OnRep_Eliminated();
+	void Respawn();
 	UPROPERTY(VisibleAnywhere, Category = Camera, meta = (AllowPrivateAccess = "true"))
 	class USpringArmComponent* CameraBoom;
 	UPROPERTY(VisibleAnywhere, Category = Camera, meta = (AllowPrivateAccess = "true"))
@@ -82,5 +111,11 @@ private:
 public:	
 	void SetOverlappingWeapon(AWeapon* Weapon);
 	bool IsWeaponEquipped();
+	AWeapon* GetEquippedWeapon() const;
+	FORCEINLINE UCameraComponent* GetFollowCamera() const { return FollowCamera; }
 	bool IsAiming();
+	bool IsEliminated() const { return bEliminated; }
+	float GetHealth() const { return Health; }
+	bool Heal(float Amount);
+	bool ApplySpeedBuff();
 };

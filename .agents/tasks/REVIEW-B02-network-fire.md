@@ -1,0 +1,5 @@
+# B02 review — PASS WITH FOLLOW-UP
+Evidence: worklog 2026-09-08 B02 core and presentation. Build passed; two-peer counts20/3s and100/15s; invalid far/reverse/NaN rejected; same-frame20requests=>1; montage active, IKtrue, cosmetic lifetime2s; pawn destruction cleanup clean.
+Authority: server owns projectile and hit destruction; cosmetic casings do not replicate and ignore pawn/visibility. Reliable fire requests are rate validated. Aim cone is broad60deg, suitable prototype not competitive anticheat. No damage until B04.
+Known limits: cloth auxiliary retarget warnings; no exact ejection socket; debug muzzle line and sphere projectile need final VFX. OnHit needs isolated timing test. Tool screenshot does not show player viewport. No packaged/dedicated/high-latency validation yet.
+Self-evaluation: accuracy4 (runtime evidence explicit, visuals unverified); completeness2 (B03-B12 pending); clarity4 (stage separated); actionability4 (saved playable build); conciseness4 (detailed evidence in log). Average3.6. Priorities: complete playable loop, finish hit/visual tests, packaged validation. User would expect continued execution, not project-complete claim.

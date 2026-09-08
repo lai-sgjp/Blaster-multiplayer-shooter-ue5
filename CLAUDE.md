@@ -92,11 +92,11 @@ Source/Blaster/
 
 Replicated 变量必须在 `GetLifetimeReplicatedProps` 注册；RepNotify 命名 `OnRep_*`；RPC 遵守 UE 命名与声明规则（`_Implementation` 由 UHT 生成，不手写）。
 
-## 当前项目状态与下一步
+## 当前项目状态与学习入口
 
-代码处于 **B00/B01 阶段**（课程第 4 节）：已完成武器拾取/装备、OverlappingWeapon 复制、RPC、装备姿势、蹲伏、瞄准。未实现：攻击/射击、血量/伤害、弹药、MatchState、拾取物、Lag Compensation 等（B02-B12）。
+当前工作区已经超出早期 B00/B01 基线：源码和项目记录覆盖服务器权威开火、Projectile/Hitscan/Shotgun、生命/淘汰/重生、弹药/换弹、双武器、Pickup、比赛阶段、HUD、Hitscan 回溯以及 B01 动画数据准备。具体“已编译”“已 PIE 验证”“仅资产存在”“尚未验证”的区别以 `README.md`、`docs/VERIFICATION.md` 和当前源码为准；不要依据旧的课程阶段描述推断功能缺失。
 
-B00 基线验收要求：双客户端能完成进入、拾取、装备、瞄准、蹲伏。计划中下一步为 **B01（第 4 节动画与网络收尾：姿势、Pitch、转身、IK、蹲伏未装备动画）**。
+面试学习总入口是 `learn/PROJECT-TECH-STACK.md`，主线章节位于 `learn/cpp/`、`learn/networking/`、`learn/gameplay/`、`learn/animation/`、`learn/ui/`、`learn/online/` 和 `learn/tooling/`。现有 B01–B11 任务卡和专题文档继续作为深挖与验证证据。
 
 ## 文档与日志约定
 

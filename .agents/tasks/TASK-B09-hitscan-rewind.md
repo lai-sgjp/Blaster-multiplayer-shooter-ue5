@@ -1,0 +1,9 @@
+# B09 hitscan rewind — Gate0 READY
+Goal: server keeps1s/30Hz body-box history; hitscan confirms against interpolated historical boxes without mutating live physics. Reject invalid/future/too-old time, duplicate/nonpositive shot ID, and weapon mismatch. Projectile/shotgun retain current-time authority and receive explicit followup design docs.
+Allowlist: new BlasterComponent/LagCompensationComponent.h/.cpp, BlasterCharacter.h/.cpp, CombatComponent.h/.cpp, docs. No asset edits. Required target bones Head/spine_02/pelvis/upperarm_l/r/thigh_l/r preflight before use.
+Dataflow: local shared trace + synchronized server timestamp adjusted by half ping + monotonically increasing shotID + weapon pointer -> owning Combat RPC -> phase/identity/time/cooldown/ammo validation -> hitscan history query -> nearest historical box before current-world obstruction -> server damage. Head40/body20; one authoritative effect per accepted shot. History age additionally bounded by measured RTT +0.2s tolerance, max1s.
+History uses fixed small box set, transforms interpolated, no collision enable/disable or temporary actor teleport. Current moving-world obstruction is a documented limitation. Memory bounded by time/count. No full rollback, projectile prediction or client damage authority.
+Verify build, box/bone preflight, two-peer current hit, moved-target old-frame hit vs current miss, past/future/NaN/replay/mismatchedweapon rejects, no live transform corruption, age cutoff and wall block. Explain coarse box extent and timestamp fairness limitations; no competitive anticheat claim.
+
+## Current delivery status (2026-09-08)
+PASS WITH FOLLOW-UP for the frozen core slice. See REVIEW-B01-B10-core.md and ../../docs/VERIFICATION.md (project docs/VERIFICATION.md) for current evidence and explicit limits; historical Gate0 and intermediate blockers above are preserved. Optional art/network extensions are not claimed complete.

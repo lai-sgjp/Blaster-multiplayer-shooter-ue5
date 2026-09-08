@@ -1,0 +1,37 @@
+# Node / mcp-server
+mcp-server/node_modules/
+mcp-server/dist/
+npm-debug.log*
+
+# Unreal Engine build artifacts (plugin source is committed, build output is not)
+UnrealMCPBridge/Binaries/
+UnrealMCPBridge/Intermediate/
+UnrealMCPBridge/Saved/
+**/Binaries/
+**/Intermediate/
+**/Saved/
+**/DerivedDataCache/
+*.sln
+*.suo
+.vs/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Scratch
+*.tmp
+
+
+# crash-sweep resume state (per-machine, regenerated on every run)
+mcp-server/.fuzz/
+
+# scratch scripts used to drive the bridge by hand during debugging
+mcp-server/t.mjs
+mcp-server/audit-check.mjs
+
+# Scratch probes written while investigating; never part of the server.
+probe-*.mjs
+probe-*.cjs

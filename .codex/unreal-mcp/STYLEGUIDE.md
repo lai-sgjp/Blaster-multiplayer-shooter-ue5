@@ -1,0 +1,99 @@
+# Style Guide
+
+The conventions this codebase already follows, written down so they stay consistent as the
+project grows and as new contributions (human or AI) land. If you're fixing style drift, this is
+the reference to check against.
+
+## C++ (`UnrealMCPBridge/`)
+
+Follows Epic's own Unreal Engine coding standard, since that's what every UE developer already
+expects and what the engine's own headers model throughout the codebase:
+
+- **Naming**: `PascalCase` for types, functions, and methods. `F` prefix for plain structs/classes
+  (`FMCPProjectIndex`), `U` for `UObject`-derived classes, `T` for templates (`TArray`, `TMap`,
+  `TUniquePtr`, `TSharedPtr`), `E` for enums, `b` prefix for booleans (`bBuilt`,
+  `bAssetRegistryStillScanning`). Local variables and function parameters are also `PascalCase`
+  (this is Epic's convention, not a typo): `PascalCase` for everything except member fields with
+  no prefix, which don't exist here since every field either has a type prefix or is private.
+- **Braces**: Allman style, with the opening brace on its own line, for functions, classes, and
+  control flow alike:
+  ```cpp
+  if (!Blueprint)
+  {
+      return MakeErrorResponse(LoadError);
+  }
+  ```
+- **Indentation**: tabs, not spaces (matches Epic's own source and `.editorconfig` defaults for UE
+  projects).
+- **Headers**: `#pragma once`, not include guards. Forward-declare where possible (see
+  `MCPTcpServer.h`'s `class FSocket;` etc) instead of including headers a `.h` doesn't need.
+- **Error handling**: commands return `bool` with an `FString& OutError` output parameter rather
+  than throwing or asserting. Every command path in `MCPCommandHandler.cpp` reports failures back
+  as a structured JSON error (`{"ok": false, "error": "..."}`) instead of crashing the editor.
+  Never use engine `check()`/`ensure()` on data that comes from an MCP request; those are for
+  programmer errors, not malformed input from a client.
+- **Comments**: `/** ... */` Doxygen-style block comments on classes and non-obvious public
+  methods, explaining *why* something exists or a non-obvious constraint (see `MCPProjectIndex.h`'s
+  class comment). Single-line `//` comments inline only when the *why* isn't obvious from the code
+  itself, not restating what the next line does. No em dashes in comments; use a period, comma, or
+  colon instead, whichever reads most naturally. No emoji.
+- **Response builders**: use the shared `MakeOkResponse` / `MakeErrorResponse` helpers rather than
+  building `FJsonObject`s inline, and avoid short generic helper names (`MakeError`, `Check`,
+  `Verify`, etc.) in files that transitively include Core headers. This collided with UE's own
+  `Templates/ValueOrError.h` once already (see `docs/M1_STATUS.md`).
+- **Threading**: everything in this plugin runs on the game thread by design (the TCP server ticks
+  via `FTSTicker`, AssetRegistry delegates fire on the game thread) specifically so command
+  handlers can call Editor/Kismet2/AssetRegistry APIs directly with no locking. Don't introduce a
+  background thread without re-checking this assumption project-wide.
+
+## TypeScript (`mcp-server/`)
+
+- **Formatting**: 2-space indentation, double quotes for strings, semicolons, trailing commas in
+  multi-line literals.
+- **Naming**: `camelCase` for variables and functions, `PascalCase` for interfaces and types
+  (`BridgeRequest`, `SearchHit`). Interfaces over `type` aliases for object shapes; `type` for
+  unions/utility types.
+- **Types**: explicit return types on exported functions. Prefer `unknown` over `any`; narrow with
+  a real check or a cast with a comment explaining why the cast is safe.
+- **Async**: `async`/`await` throughout, except where wrapping a callback-based Node API
+  (`bridgeClient.ts`'s `net.Socket` handling) genuinely requires `new Promise(...)`.
+- **Comments**: `/** ... */` JSDoc on exported functions and non-obvious module-level constants.
+  Module-header comments (see the top of `enrichment.ts`) are fine for explaining a whole file's
+  design rationale when it isn't obvious from the code alone. Same em-dash/emoji rules as C++.
+- **Error handling**: bridge-facing calls throw `Error` with a message that tells the *user* what
+  to check (see `bridgeClient.ts`'s `ECONNREFUSED` message) rather than a bare stack trace. MCP
+  tool handlers catch and convert to `errorResult(err)`. A thrown error should never escape a
+  tool call and crash the server.
+
+## Documentation (`*.md`)
+
+- No em dashes (—). Use a period, comma, colon, or parentheses instead, whichever reads most
+  naturally for that sentence. (The character above is the rule naming itself, and is the one
+  place in the repo it is allowed to appear. A sweep that finds any other instance should fix it.)
+- No emoji, anywhere, including status docs and commit messages.
+- Arrows (`→`) are fine for flow/sequence notation (`list → summary → detail`). That's a
+  deliberate technical-writing convention, not decorative.
+- Headings: sentence case, not Title Case (`## What's different about this one`, not
+  `## What's Different About This One`).
+- Code identifiers, file paths, and commands always in backticks inline; fenced code blocks with a
+  language tag (` ```cpp `, ` ```ts `, ` ```bash `) for anything longer than one line.
+- Status docs (`docs/M*_STATUS.md`, `docs/LIVE_VERIFICATION.md`) report what's actually
+  verified versus what's compiled-but-unverified, explicitly and separately. Never blur the two.
+
+## Commit messages
+
+Imperative mood summary line (`Fix duplicate-event bug`, not `Fixed` or `Fixes`), body explaining
+*why* the change matters and what was actually verified, not just what changed (the diff already
+shows what changed). No em dashes, no emoji.
+
+## Naming consistency across the project
+
+- "Blueprint" (capitalized) when referring to the UE concept, never "blueprint" or "BP" in prose
+  (code identifiers like `BP_Foo` are fine).
+- "MCP" always uppercase, never "Mcp" or "mcp" in prose (lowercase `mcp-server` is fine as the
+  literal folder/package name).
+- Command names in the bridge protocol are `snake_case` (`get_project_overview`); MCP tool names
+  are `unreal_`-prefixed `snake_case` (`unreal_get_project_overview`); C++ handler methods are
+  `PascalCase` (`HandleGetProjectOverview`). This three-way mapping is consistent throughout
+  `MCPCommandHandler.cpp` and `index.ts`, so keep it that way for any new command.
+

@@ -1,0 +1,241 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
+#include "EdGraph/EdGraphPin.h"
+
+/**
+ * Dispatches a single decoded JSON-RPC-style request to the appropriate
+ * Blueprint introspection or edit command and returns a JSON response object.
+ *
+ * Request shape:  { "id": <any>, "cmd": "<name>", "params": { ... } }
+ * Response shape: { "id": <any>, "ok": true, "result": { ... } }
+ *              or { "id": <any>, "ok": false, "error": "<message>" }
+ *
+ * Milestone 1 commands (read-only): ping, list_blueprints, list_blueprint_graphs,
+ * read_blueprint_graph_summary, read_blueprint_node_detail.
+ *
+ * Milestone 2 commands (write/edit): create_blueprint, add_node, connect_pins,
+ * set_pin_default_value, remove_node, add_variable, compile_blueprint, save_blueprint.
+ *
+ * Milestone 3 commands (project-wide index): search_project, find_references,
+ * get_project_overview. Backed by FMCPProjectIndex (see MCPProjectIndex.h), not by
+ * enumerating/loading assets ad hoc on every call.
+ *
+ * All handlers run on the game thread (FMCPTcpServer ticks via FTSTicker), so they
+ * may call directly into Editor/Kismet2/AssetRegistry/EdGraph APIs with no thread
+ * marshaling.
+ */
+class FMCPCommandHandler
+{
+public:
+	static TSharedRef<FJsonObject> Dispatch(const TSharedRef<FJsonObject>& Request);
+
+private:
+	// --- Milestone 1: read-only ---
+	static TSharedRef<FJsonObject> HandlePing(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListBlueprints(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListBlueprintGraphs(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadBlueprintGraphSummary(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadBlueprintNodeDetail(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Milestone 2: write/edit ---
+	static TSharedRef<FJsonObject> HandleCreateBlueprint(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddNode(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleConnectPins(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetPinDefaultValue(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleRemoveNode(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddVariable(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetVariableReplication(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleWatchRuntime(const TSharedPtr<FJsonObject>& Params);
+
+	/** Level Sequences, in MCPSequence.cpp: what a cutscene animates, and how one silently does nothing. */
+	static TSharedRef<FJsonObject> HandleReadLevelSequence(const TSharedPtr<FJsonObject>& Params);
+
+	/** Enhanced Input, in MCPInput.cpp: the input system every modern Unreal project actually uses. */
+	static TSharedRef<FJsonObject> HandleReadInputContext(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleMapInputKey(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleUnmapInputKey(const TSharedPtr<FJsonObject>& Params);
+
+	/** The console, in MCPConsole.cpp: the one command a human reaches for when no verb exists yet. */
+	static TSharedRef<FJsonObject> HandleRunConsoleCommand(const TSharedPtr<FJsonObject>& Params);
+
+	/** Live coding, in MCPLiveCoding.cpp: apply a C++ change to the editor that is already running. */
+	static TSharedRef<FJsonObject> HandleLiveCodingStatus(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleLiveCodingCompile(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCompileBlueprint(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSaveBlueprint(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Milestone 3: project-wide index ---
+	static TSharedRef<FJsonObject> HandleSearchProject(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleFindReferences(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleGetProjectOverview(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Milestone 5: node/function ground-truth catalog ---
+	static TSharedRef<FJsonObject> HandleFindNode(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleGetNodeSignature(const TSharedPtr<FJsonObject>& Params);
+
+	/** Read a Blueprint's Timelines: length, flags, and each track with its curve shape. */
+	static TSharedRef<FJsonObject> HandleReadTimeline(const TSharedPtr<FJsonObject>& Params);
+
+	/**
+	 * Describe a macro or built-in node kind, for the many names that are real nodes and not
+	 * functions. Returns false if the name is neither, leaving the caller to report not-found.
+	 */
+	static bool DescribeNonFunctionNode(const FString& Name, TSharedRef<FJsonObject>& Out);
+
+	// --- Milestone 7 groundwork: functions and graph organization ---
+	static TSharedRef<FJsonObject> HandleCreateFunction(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleOrganizeGraph(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Batch: many nodes/wires/defaults in one atomic transaction ---
+	static TSharedRef<FJsonObject> HandleBuildGraph(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Assets, levels, project settings, PIE (challenge tooling, part A) ---
+	static TSharedRef<FJsonObject> HandleListAssets(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateLevel(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetGameSettings(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleDescribeClass(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListInputMappings(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleGetGameSettings(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddInputMapping(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleStartPie(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleStopPie(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandlePieStatus(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Level editing: open, populate, save ---
+	/** Add an instant notify to a montage. The write half of the notify list read_asset_properties reports. */
+	/** Remove a field from a User Defined Struct; refuses while a Data Table is typed by it unless forced. */
+	/** Set a Niagara system's user parameter default. Scalars only; other types are refused by name. */
+	static TSharedRef<FJsonObject> HandleSetNiagaraUserParameter(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleDeduplicateAnimTransitions(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleRepairAnimTransition(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleRemoveStructField(const TSharedPtr<FJsonObject>& Params);
+	/** Rename a struct field, keeping the data and retyping the tables built on it. */
+	static TSharedRef<FJsonObject> HandleRenameStructField(const TSharedPtr<FJsonObject>& Params);
+	/** Remove one entry from a User Defined Enum, matched on its display name. */
+	static TSharedRef<FJsonObject> HandleRemoveEnumEntry(const TSharedPtr<FJsonObject>& Params);
+	/** Rename one enum entry's display name; the stored value is unchanged. */
+	static TSharedRef<FJsonObject> HandleRenameEnumEntry(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddMontageNotify(const TSharedPtr<FJsonObject>& Params);
+	/** Remove notifies from a montage by name, optionally only the one at a given time. */
+	static TSharedRef<FJsonObject> HandleRemoveMontageNotify(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleOpenLevel(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSpawnActor(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSaveLevel(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Brownfield repair: refresh nodes after a C++ change ---
+	static TSharedRef<FJsonObject> HandleRefreshBlueprint(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Asset management: delete with reference safety ---
+	static TSharedRef<FJsonObject> HandleDeleteAsset(const TSharedPtr<FJsonObject>& Params);
+	/** Rename or move an asset through AssetTools, so every reference to it is fixed up. */
+	static TSharedRef<FJsonObject> HandleRenameAsset(const TSharedPtr<FJsonObject>& Params);
+	/** Copy an asset, which is how a person starts "one more like that one". */
+	static TSharedRef<FJsonObject> HandleDuplicateAsset(const TSharedPtr<FJsonObject>& Params);
+	/** Rename a Blueprint variable, rebinding every GET and SET node that reads it. */
+	static TSharedRef<FJsonObject> HandleRenameVariable(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleRenameFunction(const TSharedPtr<FJsonObject>& Params);
+	/** Remove a Blueprint variable, refusing while graph nodes still use it unless forced. */
+	static TSharedRef<FJsonObject> HandleRemoveVariable(const TSharedPtr<FJsonObject>& Params);
+	/** Rename a component through the SCS, so the graphs that reference it follow. */
+	static TSharedRef<FJsonObject> HandleRenameComponent(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateAsset(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetVariableType(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleInjectInput(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandlePieActors(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleTeleportActor(const TSharedPtr<FJsonObject>& Params);
+	/** Remove a component, promoting its children rather than deleting them silently. */
+	static TSharedRef<FJsonObject> HandleRemoveComponent(const TSharedPtr<FJsonObject>& Params);
+	/** Remove a function graph, refusing while anything still calls it unless forced. */
+	static TSharedRef<FJsonObject> HandleRemoveFunction(const TSharedPtr<FJsonObject>& Params);
+
+	// --- Components and class defaults (challenge tooling, part B) ---
+	static TSharedRef<FJsonObject> HandleAddComponent(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListVariables(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListComponents(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetComponentProperty(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateWidgetBlueprint(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddWidget(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListWidgets(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetWidgetProperty(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadAssetProperties(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadClassDefaults(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadAnimBlueprint(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadBehaviorTree(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleReadNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleTraceVariable(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleFindBrokenNames(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleTraceFunctionCalls(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetAssetProperty(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSaveAsset(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateDataTable(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddDataTableRow(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetDataTableRow(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleRemoveDataTableRow(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListDataTableRows(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateStruct(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAddStructField(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListStructFields(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateEnum(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add one entry to an existing user-defined enum. */
+	static TSharedRef<FJsonObject> HandleAddEnumEntry(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListEnumEntries(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateMaterial(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleBuildMaterialGraph(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleImportAsset(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetMaterialParameter(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListMaterialParameters(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleListActors(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetActorProperty(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleDeleteActor(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleUndoHistory(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleUndo(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleProjectHealth(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleAssetStatus(const TSharedPtr<FJsonObject>& Params);
+	static TSharedRef<FJsonObject> HandleSetClassDefault(const TSharedPtr<FJsonObject>& Params);
+
+	// Shared core of add_node and build_graph. When bOpenTransaction is false the caller
+	// must already hold a transaction and have decided how failures roll back.
+	static TSharedRef<FJsonObject> AddNodeCore(class UBlueprint* Blueprint, class UEdGraph* Graph,
+		const TSharedPtr<FJsonObject>& Params, bool bOpenTransaction);
+
+	// --- Shared lookup helpers ---
+
+	// Loads a Blueprint asset given a package/object path (e.g. "/Game/Blueprints/BP_Foo.BP_Foo").
+	static class UBlueprint* LoadBlueprintByPath(const FString& Path, FString& OutError);
+
+	// Finds one of a Blueprint's graphs (event graph, function, macro, ...) by name.
+	static class UEdGraph* FindGraphByName(class UBlueprint* Blueprint, const FString& GraphName, FString& OutError);
+
+	// Resolves a node id (as produced by read_blueprint_graph_summary / add_node, "n<index>")
+	// back to a node within a specific graph. Not stable across editor sessions or edits.
+	static class UEdGraphNode* FindNodeById(class UEdGraph* Graph, const FString& NodeId, FString& OutError);
+
+	// Resolves a class by short name ("Actor", "Pawn") or full path ("/Script/Engine.Actor",
+	// "/Game/BP_Base.BP_Base_C"). Tries A-/U- native prefixes for short names.
+	static UClass* ResolveClassByName(const FString& ClassName, FString& OutError);
+
+	// Resolves a UWidget subclass by name, rejecting non-widget and abstract classes with a
+	// message that lists the widget classes a caller most likely wanted.
+	static UClass* ResolveWidgetClass(const FString& ClassName, FString& OutError);
+
+	// Loads a Widget Blueprint specifically, failing with what was found instead when the path
+	// points at an ordinary Blueprint.
+	static class UWidgetBlueprint* LoadWidgetBlueprint(const FString& Path, FString& OutError);
+
+	// Resolves a struct by short asset name, full path, or engine name. Covers both native
+	// engine structs and the project's own UUserDefinedStruct assets.
+	static UScriptStruct* ResolveStructByName(const FString& Name, FString& OutError);
+
+	// Resolves an enum the same way, for enum:<Name> variable types.
+	static UEnum* ResolveEnumByName(const FString& Name, FString& OutError);
+
+	// Parses a compact type descriptor (see add_variable / set_pin_default_value docs in
+	// mcp-server) into an FEdGraphPinType: bool, byte, int, int64, float, double, string,
+	// name, text, vector, rotator, transform, object:<Class>, class:<Class>.
+	static bool ResolvePinType(const FString& TypeStr, struct FEdGraphPinType& OutType, FString& OutError);
+};

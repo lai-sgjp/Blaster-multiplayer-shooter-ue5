@@ -1,0 +1,255 @@
+// Shapes returned by UnrealMCPBridge (see UnrealMCPBridge/Source/UnrealMCPBridge/Private/MCPCommandHandler.cpp).
+// Kept intentionally minimal/compact to match the bridge's token-lean wire format.
+
+export interface PingResult {
+  status: string;
+  plugin: string;
+  protocolVersion: number;
+}
+
+export interface BlueprintListEntry {
+  name: string;
+  path: string;
+  parentClass: string;
+}
+
+export interface ListBlueprintsResult {
+  blueprints: BlueprintListEntry[];
+  count: number;
+}
+
+export interface BlueprintGraphEntry {
+  name: string;
+  nodeCount: number;
+}
+
+export interface ListBlueprintGraphsResult {
+  path: string;
+  graphs: BlueprintGraphEntry[];
+}
+
+export interface PinLink {
+  node: string;
+  pin: string;
+}
+
+export interface GraphSummaryPin {
+  pin: string;
+  direction: "in" | "out";
+  linkedTo: PinLink[];
+}
+
+export interface GraphSummaryNode {
+  id: string;
+  type: string;
+  title: string;
+  connectedPins: GraphSummaryPin[];
+}
+
+export interface ReadBlueprintGraphSummaryResult {
+  path: string;
+  graphName: string;
+  nodes: GraphSummaryNode[];
+}
+
+export interface NodeDetailPin {
+  name: string;
+  direction: "in" | "out";
+  category: string;
+  subCategory?: string;
+  defaultValue: string;
+  isArray: boolean;
+  linkedTo: PinLink[];
+}
+
+export interface ReadBlueprintNodeDetailResult {
+  id: string;
+  type: string;
+  title: string;
+  comment: string;
+  enabled: boolean;
+  pins: NodeDetailPin[];
+}
+
+// --- Milestone 2: write/edit result shapes ---
+
+export interface CreateBlueprintResult {
+  path: string;
+  name: string;
+  parentClass: string;
+  saved: boolean;
+  saveError?: string;
+}
+
+export interface AddNodeResult {
+  id: string;
+  type: string;
+  title: string;
+  /** True if this was an existing override-event node reused instead of creating a duplicate. */
+  alreadyExisted?: boolean;
+}
+
+export interface ConnectPinsResult {
+  connected: boolean;
+  note?: string;
+}
+
+export interface SetPinDefaultValueResult {
+  set: boolean;
+  pin: string;
+  value: string;
+}
+
+export interface RemoveNodeResult {
+  removed: boolean;
+  id: string;
+  type: string;
+}
+
+export interface AddVariableResult {
+  added: boolean;
+  name: string;
+  type: string;
+  /** The owning Blueprint's parent class, so the write can be judged without a second read. */
+  parentClass?: string;
+}
+
+export type CompileMessageSeverity = "error" | "warning" | "performance_warning" | "info";
+
+export interface CompileMessage {
+  severity: CompileMessageSeverity;
+  text: string;
+}
+
+export interface CompileBlueprintResult {
+  success: boolean;
+  errorCount: number;
+  warningCount: number;
+  status: string;
+  messages: CompileMessage[];
+}
+
+export interface SaveBlueprintResult {
+  saved: boolean;
+  path: string;
+}
+
+// --- Milestone 3: project-wide index result shapes ---
+
+export type SearchHitKind = "blueprint" | "function" | "variable";
+
+export interface SearchHit {
+  kind: SearchHitKind;
+  path: string;
+  name: string;
+  context: string;
+  /** Optional one-line natural-language description, added client-side by enrichment.ts
+   * when UNREAL_MCP_LOCAL_LLM_URL is configured. Never present in the raw bridge response. */
+  summary?: string;
+}
+
+export interface SearchProjectResult {
+  query: string;
+  hits: SearchHit[];
+  hitCount: number;
+  truncated: boolean;
+}
+
+export interface ReferenceEntry {
+  package: string;
+  assetName?: string;
+  assetClass?: string;
+}
+
+export interface FindReferencesResult {
+  path: string;
+  referencedBy: ReferenceEntry[];
+  referencedByCount: number;
+  dependsOn: ReferenceEntry[];
+  dependsOnCount: number;
+}
+
+/** One parameter or return value of a Blueprint-callable function, from engine reflection. */
+export interface NodeSignatureParam {
+  name: string;
+  type: string;
+  direction: "in" | "out" | "return";
+  defaultValue?: string;
+}
+
+/**
+ * One entry in the node catalog. Search hits omit `params` and carry `paramCount`
+ * instead; unreal_get_node_signature returns the full `params` list.
+ */
+export interface NodeCatalogEntry {
+  functionName: string;
+  displayName: string;
+  className: string;
+  classPath: string;
+  pure: boolean;
+  static: boolean;
+  category?: string;
+  tooltip?: string;
+  paramCount?: number;
+  params?: NodeSignatureParam[];
+}
+
+export interface FindNodeResult {
+  query: string;
+  hits: NodeCatalogEntry[];
+  hitCount: number;
+  catalogSize: number;
+}
+
+/** A near-miss returned alongside a not-found error, so the caller can self-correct. */
+export interface NodeSuggestion {
+  functionName: string;
+  className: string;
+}
+
+export interface BuildGraphResult {
+  /** Caller-chosen ref -> created node info. */
+  nodes: Record<string, AddNodeResult>;
+  connectionsMade: number;
+  pinDefaultsSet: number;
+  compile?: CompileBlueprintResult;
+}
+
+export interface CreateFunctionResult {
+  graphName: string;
+  entryNodeId: string;
+  resultNodeId?: string;
+  inputCount: number;
+  outputCount: number;
+}
+
+/** Shape varies by action; all carry the affected node's id. */
+export interface OrganizeGraphResult {
+  id: string;
+  comment?: string;
+  text?: string;
+  x?: number;
+  y?: number;
+}
+
+export interface FolderBreakdown {
+  folder: string;
+  blueprintCount: number;
+}
+
+export interface ParentClassBreakdown {
+  parentClass: string;
+  count: number;
+}
+
+export interface GetProjectOverviewResult {
+  blueprintCount: number;
+  totalFunctions: number;
+  totalVariables: number;
+  totalGraphs: number;
+  totalNodes: number;
+  folders: FolderBreakdown[];
+  byParentClass: ParentClassBreakdown[];
+  assetRegistryStillScanning: boolean;
+}
+

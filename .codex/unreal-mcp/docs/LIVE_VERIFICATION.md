@@ -1,0 +1,264 @@
+# Live Verification: first real session against a running Editor
+
+Date: 2026-08-08. Target: `A:\UnrealProjects\AntiVirusSquadUE58` (UE 5.8, stock launcher install),
+a real ~20-Blueprint game project, not a synthetic test project.
+
+Every milestone up to this point had been build-verified and protocol-verified, but never run
+against an actual open Unreal Editor (see the "unverified" sections of `M1_STATUS.md`,
+`M2_STATUS.md`, and `M3_STATUS.md`). This session closes that gap.
+
+## What was tested, against real project data
+
+1. **Editor loads the plugin correctly.** Output Log confirmed:
+   ```
+   LogPluginManager: Mounting Project plugin UnrealMCPBridge
+   LogModuleManager: InternalLoadLibrary: 'UnrealMCPBridge' (...UnrealEditor-UnrealMCPBridge.dll)
+   LogMCPBridge: UnrealMCPBridge: listening on 127.0.0.1:8765
+   ```
+2. **Read path (M1), against real data**: `ping`, `get_project_overview`, `list_blueprints`,
+   `search_project`, `list_blueprint_graphs`, `find_references`, `read_blueprint_graph_summary`
+   all returned correct, sane results against the real project: 19 real Blueprints (e.g.
+   `AVS_GameInstance`, `BP_Vacuum`, `WB_MainMenu`), correct parent classes, correct graph/node
+   counts (134+ graphs, 1200+ nodes project-wide).
+3. **Write path (M2), live**: `create_blueprint` → `add_node` (Event) → `compile_blueprint` →
+   `save_blueprint` all succeeded against the real editor, producing a real, saved, compiling
+   Blueprint asset (`/Game/_MCPTest/BP_MCPLiveTest2`). Then `add_node` (CallFunction: PrintString)
+   → `set_pin_default_value` → `connect_pins` → `compile_blueprint` → `save_blueprint` produced a
+   real, working `BeginPlay → Print String` graph. The screenshot below is that exact graph, opened
+   in the real Blueprint editor.
+4. **Index freshness (M3), live, without restarting the editor**: `get_project_overview`'s
+   `blueprintCount` incremented immediately after `create_blueprint`, and `search_project` found
+   the new Blueprint by name immediately, confirming the `IAssetRegistry` delegate-driven
+   incremental index actually works, not just compiles. This was the single highest-priority
+   unverified claim across all three milestones.
+
+## Bug found and fixed during this session
+
+`add_node` with `nodeType: "Event"` created a **duplicate** override-event node instead of
+reusing an existing one. This only shows up against a real editor: new Actor-derived Blueprints
+come with pre-populated, disconnected stub event nodes (`BeginPlay`, `ActorBeginOverlap`, `Tick`)
+that don't exist in a synthetic/mocked graph. The first live `add_node(eventName="ReceiveBeginPlay")`
+call created a second `Event BeginPlay` node alongside the existing one instead of recognizing it.
+
+Fixed in `MCPCommandHandler.cpp`'s `HandleAddNode`: before creating a new override-event node, the
+graph's existing nodes are checked for a `UK2Node_Event` with a matching `EventReference`. If one
+exists, its id is returned with `alreadyExisted: true` instead of creating a duplicate, matching
+how the real Blueprint editor behaves when you re-add an event that's already there. Verified fixed
+via Live Coding-style rebuild + relaunch + a repeat test showing the node count staying at 3 (not 4)
+with `alreadyExisted: true` in the response.
+
+## Screenshot
+
+![Live Blueprint graph, created entirely via MCP tool calls](images/live_blueprint_graph.png)
+
+This is the real Unreal Editor, real Blueprint editor, showing `BP_MCPLiveTest2`'s `EventGraph`
+after the tool calls above, not a mockup. The greyed-out `ActorBeginOverlap`/`Tick` nodes are
+UE's own default stub events, unconnected and correctly reported as disabled by the engine itself.
+
+## What's still not covered
+
+- Only `create_blueprint`, `add_node` (Event + CallFunction), `set_pin_default_value`,
+  `connect_pins`, `compile_blueprint`, `save_blueprint`, and all of M1/M3's read commands have run
+  live. `add_variable`, `remove_node`, `read_blueprint_node_detail`, and `add_node` with
+  `CustomEvent`/`VariableGet`/`VariableSet` have not yet been exercised against a live editor.
+- Only tested on UE 5.8. UE 5.6 build/live-test still outstanding.
+- Only tested against one project. Behavior against Blueprints with more exotic node types
+  (macros, timelines, interfaces with default implementations) is unverified.
+
+## Two engines means two builds
+
+This plugin supports UE 5.6 and 5.8. Keeping both honest used to be a human remembering to do the
+second one, and that failed three times - each time producing a failure that looked like broken code
+and was really a binary older than the change:
+
+- a guard that "could not fire on a fresh project" (it could; the binary predated it)
+- `add_variable did not report the parent class` (it did; built for 5.6, exercised on 5.8)
+- and an hour spent on a hang that turned out to be a modal dialog on a force-killed editor
+
+Each one sent the investigation into the wrong codebase, which is the expensive part. So it is now
+impossible to do quietly.
+
+### `npm run build:engines`
+
+Syncs the plugin source into every configured project and builds against every engine, and
+**refuses to report success unless every target actually built** - a partial success reported as
+success is the original problem restated. It requires both a zero exit code and `Result: Succeeded`
+in the output, because trusting an exit code alone is its own genre of bug.
+
+Targets live in `mcp-server/build-targets.json`, since engine and project paths are specific to a
+machine:
+
+```json
+{
+  "targets": [
+    { "name": "5.6", "engine": "M:/Unreal/UE_5.6", "project": "A:/.../Test56.uproject" },
+    { "name": "5.8", "engine": "F:/UE_5.8",        "project": "A:/.../Real58.uproject" }
+  ]
+}
+```
+
+### The binary says how old it is
+
+The editor cannot tell you its plugin is stale, but the plugin can: `ping` now reports
+`pluginBuiltAt`, stamped at compile time.
+
+`live-verify` checks that before running anything and **fails outright** if the running plugin is
+older than the newest source file. A warning at the top of a hundred passing checks is a warning
+nobody reads; refusing to start is a sentence somebody acts on:
+
+```
+the running plugin was built Aug 18 2026 09:14:02, which is older than the newest
+source. This editor is not running the code you just wrote - rebuild for 5.8 and
+restart.
+```
+
+There is a minute of slack, because the compiler stamps each translation unit as it reaches it, so
+a build that began just before the last save can still contain the change.
+
+`npm run check:fresh` runs the same check on its own.
+
+### Why this is in a project about Blueprints
+
+It is not really about engine versions. It is the same rule the rest of this project keeps
+rediscovering: **a check that can be skipped by a person having a bad day is not a check.** The
+parity guard, the docs guard, the profile budget and this all exist for the same reason, and each
+was added after the thing it prevents had already happened at least once.
+
+## Behaving like a strict client
+
+Every measurement in this project has been taken through its own benchmark harness or through Claude
+Code. Both are lenient in ways a stricter client is not, and **every bug found by changing vantage
+point was invisible from the old one** - a real project instead of a scratch one, a stranger's clone
+instead of the working copy. The harness alone has been wrong four times in ways that looked exactly
+like product failures.
+
+So `npm run check:protocol` behaves like a client that forgives nothing. It needs no editor, because
+all of it is protocol rather than engine.
+
+It checks the handshake (`protocolVersion`, `serverInfo`, declared capabilities), every tool's name
+and schema, how failures come back, the prompts surface, and concurrency.
+
+### The one that would have hurt
+
+This server enables tools at runtime and sends `notifications/tools/list_changed`. **A client only
+re-reads the tool list if the server declared `capabilities.tools.listChanged`.** Undeclared, every
+lazily-enabled tool stays invisible and `unreal_enable_tools` silently does nothing - which is
+precisely the failure the benchmark harness had, arrived at from the other side.
+
+It turned out to be declared correctly. That is a guard now rather than a fix.
+
+### What it found: nothing
+
+Worth stating plainly, because a check that finds nothing is usually reported as if it had never
+been run. The handshake is correct, all 73 tool names and schemas are well-formed, wrongly-typed and
+missing arguments both come back as error *results* rather than JSON-RPC errors, all three prompts
+round-trip, and four concurrent requests each return matched to their own id.
+
+### Proving the checker is not vacuous
+
+A checker nobody has ever seen fail is a checker nobody should believe - and this project has already
+shipped one fixture that lied. So the server path is overridable, and the check was run against a
+deliberately broken copy with an 86-character tool name:
+
+```
+  - tool name is 86 characters, over the 64 limit: unreal_ping_with_a_deliberately_...
+```
+
+One problem, precisely the injected one, and nothing else. An earlier attempt at the same test put
+the broken copy outside the package, where it could not resolve `node_modules` and simply failed to
+start - which proved only that the checker notices a dead server. Worth the second attempt: the
+weaker version would have looked like success.
+
+## A bug the audit found and the tools fixed, end to end (2026-08-30)
+
+The first time the whole chain ran on its own against the live project: find, locate, verify the
+convention, change one pin, re-check. Nothing about it was seeded.
+
+`unreal_audit_project` reported one `session-lan-mismatch`, its most expensive check:
+
+```
+Hosting and searching disagree about LAN, so a lobby can be created and still never appear in
+the list. LAN hosts: WB_ServerList (Create Kronos Match). Online hosts: PC_MainMenu, WB_MainMenu,
+WB_HostGameButton. LAN searches: none. Online searches: WB_ServerList (Find Kronos Matches).
+```
+
+**The same widget** hosted on LAN and searched online. A lobby created from the server list is
+broadcast to the local network, and the very list it was created from looks online - so it never
+appears. Hosting from the main menu works, which is what makes it survive: the path people test is
+not the broken one, and neither side ever reports an error.
+
+Following the `HostParams` and `SearchParams` links to the nodes that build them:
+
+| Node | Pin | Was |
+| --- | --- | --- |
+| `WB_ServerList` / `BE59B028` Make Kronos Host Params | `bIsLanMatch` | `true` |
+| `WB_ServerList` / `D88EC2DF` Make Kronos Search Params | `bIsLanQuery` | `False` |
+
+Before changing anything, every other live host path was read to find the project's convention
+rather than guess one: `PC_MainMenu`, `WB_MainMenu` and `WB_HostGameButton` all build host params
+with `bIsLanMatch = False`. So `False` is what the project means by hosting, and the server list was
+the only path that disagreed. `unreal_set_pin_default_value`, compile, save.
+
+`unreal_audit_project` again, same editor: **790 findings to 788**, and both session checks gone -
+the mismatch and the `session-host-paths-disagree` that came with it. The verification is the audit
+re-run rather than a claim, which is the only reason to trust it.
+
+Worth noting what made this findable at all: the check is about the **project**, not about any one
+Blueprint. Every fact it needs sits in a different asset from every other, and no per-asset review
+could ever have put them together.
+
+
+## Watching a replication bug happen, on a running game (2026-08-31)
+
+The first time anything in this repository observed runtime behaviour rather than reading assets.
+`npm run trial:runtime` against a live UE 5.6 editor, two PIE clients under one process:
+
+```text
+the bug: Ticks is not replicated
+  unreplicated: worlds up                        2
+      Authority  99 -> 490   changed=true
+      Client       0 -> 0    changed=false
+```
+
+The trial builds an actor whose server copy increments a non-replicated counter, plays with two
+players, and reads the value out of **both worlds**. The server counted to 490 and the client never
+moved. That is `server-writes-unreplicated` - the check this project prices at the top of its scale,
+whose entire difficulty is that it works for the host and one person cannot reproduce it - seen
+happening.
+
+### What it took, because none of it was the feature
+
+Five runs, and every failure was somewhere else:
+
+| Run | Failed on | Actually wrong |
+| --- | --- | --- |
+| 1 | everything, silently, for 11 minutes | Open World startup map blocked the game thread |
+| 2 | `ping`, in 15 seconds | the preflight added after run 1, working |
+| 3 | `build_graph` | `HasAuthority` is pure; the header says `BlueprintCallable` |
+| 4 | `create_blueprint` | previous run's asset survived; `matchingActors` climbed 1, 2, 3 |
+| 5 | — | passes |
+
+Run 3 is the one worth keeping. `Actor.h` declares `HasAuthority` as `UFUNCTION(BlueprintCallable)`
+with no `BlueprintPure`, so reading the header says "impure, wire it into the exec chain". The real
+node has no exec pins at all - UHT promotes a **const** BlueprintCallable with a return value to pure
+automatically. The bridge said so in one line: *"input pin 'execute' not found. Use one of: self"*.
+That is the whole argument for asking the running engine instead of reading source, and it is the
+error message added two days earlier paying for itself.
+
+Run 4 is the second: `watch_runtime`'s own `matchingActors` field is what exposed the leftovers.
+Three actors of one class in one world, and the sampler takes the first it finds, so the number being
+reported was not reliably from the actor under test. A field added because "several actors" seemed
+worth mentioning turned out to be the thing that caught a broken trial.
+
+### What it does not prove, stated by the trial itself
+
+The client **receiving** the value after `set_variable_replication` does not pass. The configuration
+is right - `bReplicates`, `bAlwaysRelevant`, and `changed: true` from the replication call - and the
+missing piece is actor identity: a level-placed actor binds to its server counterpart by a stable
+path name that comes from the saved package, and this one is spawned at edit time into a map the
+trial deliberately does not save. Saving was tried and is worse: `save_level` opens
+`InternalPromptForCheckoutAndSave`, which blocks the game thread until a human clicks it, on an
+Engine template map **and** on a project map.
+
+The trial reports that as a `note` and still exits 0, because everything it was written to prove
+passed. Turning it into a red failure would train somebody to ignore a red failure.

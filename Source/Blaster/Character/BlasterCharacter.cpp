@@ -10,10 +10,15 @@
 #include "Net/UnrealNetwork.h"
 #include "Blaster/Weapon/Weapon.h"
 #include "Blaster/BlasterComponent/CombatComponent.h"
+#include "BlasterGameMode.h"
+#include "TimerManager.h"
+#include "Blaster/BlasterComponent/LagCompensationComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 
 ABlasterCharacter::ABlasterCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	LagCompensation = CreateDefaultSubobject<ULagCompensationComponent>(TEXT("LagCompensation"));
 
 	bUseControllerRotationYaw = false;
 	GetCharacterMovement()->bOrientRotationToMovement = true;
@@ -24,6 +29,7 @@ ABlasterCharacter::ABlasterCharacter()
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(GetRootComponent()); // original GetMesh()
 	CameraBoom->TargetArmLength = 300.f;
+	CameraBoom->SocketOffset = FVector(0.f, 70.f, 35.f);
 	CameraBoom->bUsePawnControlRotation = true; // Rotate the arm based on the controller
 
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
@@ -45,6 +51,81 @@ void ABlasterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME_CONDITION(ABlasterCharacter, OverlappingWeapon, COND_OwnerOnly);
+	DOREPLIFETIME(ABlasterCharacter, Health);
+	DOREPLIFETIME(ABlasterCharacter, bEliminated);
+	DOREPLIFETIME(ABlasterCharacter, MoveSpeed);
+}
+
+void ABlasterCharacter::ReceiveDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType,
+	AController* InstigatorController, AActor* DamageCauser)
+{
+	if (!HasAuthority() || bEliminated || !FMath::IsFinite(Damage) || Damage <= 0.f) return;
+	const ABlasterGameMode* ActiveMode = GetWorld()->GetAuthGameMode<ABlasterGameMode>();
+	if (!ActiveMode || ActiveMode->GetMatchState() != MatchState::InProgress) return;
+	Health = FMath::Clamp(Health - Damage, 0.f, 100.f);
+	if (Health <= 0.f)
+	{
+		bEliminated = true;
+		OnRep_Eliminated();
+		if (ABlasterGameMode* Mode = GetWorld()->GetAuthGameMode<ABlasterGameMode>())
+			Mode->RecordElimination(GetController(), InstigatorController);
+		if (Combat) Combat->DropWeapons();
+		GetWorldTimerManager().SetTimer(RespawnTimer, this, &ABlasterCharacter::Respawn, 3.f, false);
+	}
+	ForceNetUpdate();
+}
+
+void ABlasterCharacter::OnRep_Eliminated()
+{
+	if (!bEliminated) return;
+	GetWorldTimerManager().ClearTimer(SpeedTimer);
+	if (Combat) Combat->SetFireButtonPressed(false);
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->DisableMovement();
+	SetActorEnableCollision(false);
+}
+
+void ABlasterCharacter::Respawn()
+{
+	if (ABlasterGameMode* Mode = GetWorld()->GetAuthGameMode<ABlasterGameMode>())
+		Mode->RespawnPlayer(this, GetController());
+}
+
+void ABlasterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	GetWorldTimerManager().ClearTimer(RespawnTimer);
+	GetWorldTimerManager().ClearTimer(SpeedTimer);
+	Super::EndPlay(EndPlayReason);
+}
+
+bool ABlasterCharacter::Heal(float Amount)
+{
+	if (!HasAuthority() || bEliminated || !FMath::IsFinite(Amount) || Amount <= 0.f || Health >= 100.f) return false;
+	Health = FMath::Min(100.f, Health + Amount);
+	ForceNetUpdate();
+	return true;
+}
+
+bool ABlasterCharacter::ApplySpeedBuff()
+{
+	if (!HasAuthority() || bEliminated) return false;
+	MoveSpeed = 900.f;
+	OnRep_MoveSpeed();
+	GetWorldTimerManager().SetTimer(SpeedTimer, this, &ABlasterCharacter::ResetMoveSpeed, 8.f, false);
+	ForceNetUpdate();
+	return true;
+}
+
+void ABlasterCharacter::ResetMoveSpeed()
+{
+	MoveSpeed = 600.f;
+	OnRep_MoveSpeed();
+	ForceNetUpdate();
+}
+
+void ABlasterCharacter::OnRep_MoveSpeed()
+{
+	GetCharacterMovement()->MaxWalkSpeed = MoveSpeed;
 }
 
 void ABlasterCharacter::PostInitializeComponents()
@@ -60,6 +141,16 @@ void ABlasterCharacter::PostInitializeComponents()
 void ABlasterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+	if (HasAuthority()) GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	if (HasAuthority()) OnTakeAnyDamage.AddDynamic(this, &ABlasterCharacter::ReceiveDamage);
+	if (HasAuthority() && Combat && DefaultWeaponClass)
+	{
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AWeapon* DefaultWeapon = GetWorld()->SpawnActor<AWeapon>(DefaultWeaponClass, GetActorLocation(), GetActorRotation(), Spawn);
+		if (DefaultWeapon) Combat->EquipWeapon(DefaultWeapon);
+	}
 
 	UE_LOG(LogTemp, Warning, TEXT("BlasterMappingContext is: %s"),BlasterMappingContext ? *BlasterMappingContext->GetName() : TEXT("NULL"));
 	
@@ -75,7 +166,11 @@ void ABlasterCharacter::BeginPlay()
 void ABlasterCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-
+	// Both the owning player and server use the same rotation policy. Proxies
+	// consume the replicated actor rotation; animation never rotates the actor.
+	const bool bEquipped = IsValid(GetEquippedWeapon());
+	bUseControllerRotationYaw = bEquipped;
+	GetCharacterMovement()->bOrientRotationToMovement = !bEquipped;
 }
 
 void ABlasterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -92,6 +187,16 @@ void ABlasterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 			EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Started, this, &ABlasterCharacter::CrouchButtonPressed);
 			EnhancedInputComponent->BindAction(AimAction, ETriggerEvent::Started, this, &ABlasterCharacter::AimButtonPressed);
 			EnhancedInputComponent->BindAction(AimAction, ETriggerEvent::Completed, this, &ABlasterCharacter::AimButtonReleased);
+			if (AttackAction)
+			{
+				EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Started, this, &ABlasterCharacter::Attack);
+				EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Completed, this, &ABlasterCharacter::StopAttack);
+				EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Canceled, this, &ABlasterCharacter::StopAttack);
+			}
+			if (ReloadAction)
+				EnhancedInputComponent->BindAction(ReloadAction, ETriggerEvent::Started, this, &ABlasterCharacter::ReloadButtonPressed);
+			if (SwapAction)
+				EnhancedInputComponent->BindAction(SwapAction, ETriggerEvent::Started, this, &ABlasterCharacter::SwapButtonPressed);
 		}
 	}
 }
@@ -121,20 +226,7 @@ void ABlasterCharacter::Look(const FInputActionValue& Value)
 
 void ABlasterCharacter::EKeyPressed()
 {
-	if (Combat)
-	{
-		if (HasAuthority())
-		{
-			if (OverlappingWeapon)
-			{
-				Combat->EquipWeapon(OverlappingWeapon);
-			}
-		}
-		else
-		{
-			ServerEquipButtonPressed();
-		}
-	}
+	if (Combat) ServerEquipButtonPressed();
 }
 
 void ABlasterCharacter::CrouchButtonPressed()
@@ -157,6 +249,26 @@ void ABlasterCharacter::AimButtonPressed()
 	}
 }
 
+void ABlasterCharacter::Attack()
+{
+	if (IsValid(Combat)) Combat->SetFireButtonPressed(true);
+}
+
+void ABlasterCharacter::StopAttack()
+{
+	if (IsValid(Combat)) Combat->SetFireButtonPressed(false);
+}
+
+void ABlasterCharacter::ReloadButtonPressed()
+{
+	if (IsValid(Combat)) Combat->Reload();
+}
+
+void ABlasterCharacter::SwapButtonPressed()
+{
+	if (IsValid(Combat)) Combat->SwapWeapons();
+}
+
 void ABlasterCharacter::AimButtonReleased()
 {
 	if (Combat)
@@ -169,7 +281,20 @@ void ABlasterCharacter::ServerEquipButtonPressed_Implementation()
 {
 	if (Combat)
 	{
-		Combat->EquipWeapon(OverlappingWeapon);
+		// Re-query actual overlaps: another nearby pickup can remain after one is
+		// equipped or leaves, without generating a new begin-overlap event.
+		TArray<AActor*> Candidates;
+		GetOverlappingActors(Candidates, AWeapon::StaticClass());
+		AWeapon* Nearest = nullptr;
+		double BestDistance = TNumericLimits<double>::Max();
+		for (AActor* Candidate : Candidates)
+		{
+			AWeapon* Weapon = Cast<AWeapon>(Candidate);
+			if (!IsValid(Weapon) || Weapon->GetOwner()) continue;
+			const double Distance = FVector::DistSquared(GetActorLocation(), Weapon->GetActorLocation());
+			if (Distance < BestDistance) { Nearest = Weapon; BestDistance = Distance; }
+		}
+		Combat->EquipWeapon(Nearest);
 	}
 }
 
@@ -209,4 +334,9 @@ bool ABlasterCharacter::IsWeaponEquipped()
 bool ABlasterCharacter::IsAiming()
 {
 	return (Combat && Combat->bAiming);
+}
+
+AWeapon* ABlasterCharacter::GetEquippedWeapon() const
+{
+	return IsValid(Combat) ? Combat->EquippedWeapon : nullptr;
 }

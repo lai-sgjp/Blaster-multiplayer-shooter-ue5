@@ -44,6 +44,12 @@ Blaster/
 ├── Plugins/
 │   ├── MultiplayerSessions/       # 自定义会话管理插件
 │   └── VRM4U/                     # VRM 模型导入插件
+├── learn/                         # 项目学习知识库，按技术主题分类
+│   ├── animation/                 # AnimGraph、Aim Offset、IK、移动姿势
+│   ├── networking/                # Replication、RPC、Ownership、PIE
+│   ├── cpp/                       # UE C++、反射、生命周期、模块
+│   ├── editor/                    # 必须由用户执行的 UE Editor 操作
+│   └── debugging/                 # 构建、日志、工具和故障排查
 └── Source/
     ├── Blaster.Target.cs           # Game 目标（V5, Unreal5_6）
     ├── BlasterEditor.Target.cs     # Editor 目标（V5, Unreal5_6）
@@ -154,23 +160,22 @@ Blaster/
 
 ## 当前开发状态
 
-### 已完成
-- [x] 角色移动 + 视角控制（Enhanced Input）
-- [x] 武器拾取 + 装备（含网络复制、Server RPC）
-- [x] 多人大厅 + 会话管理（Steam + MultiplayerSessions）
-- [x] Lobby 到 BlasterMap 关卡切换（SeamlessTravel）
-- [x] 头顶信息显示（网络角色、玩家名）
-- [x] 动画蓝图基础（速度、空中、加速状态）
+当前工作区已经超出早期课程骨架。源码和验证记录覆盖服务器权威开火、Projectile/Hitscan/Shotgun、生命/淘汰/重生、弹药/换弹、双武器、Pickup、比赛阶段、HUD、Hitscan 回溯、Enhanced Input、Steam Session 和 B01 动画数据准备。
 
-### 待实现
-- [ ] 攻击/射击系统
-- [ ] 生命值与伤害系统
-- [ ] 闪避/翻滚动作
-- [ ] 掉落武器
-- [ ] HUD（准星、血量、弹药）
-- [ ] 游戏规则逻辑（计分、重生）
-- [ ] VRM 角色绑定
-- [ ] PCG 关卡打磨
+具体“已编译”“已 PIE 验证”“仅资产/配置存在”“尚未验证”以根目录 `README.md`、`docs/VERIFICATION.md`、`learn/PROJECT-TECH-STACK.md` 和当前源码为准；不要依据旧课程阶段清单推断功能缺失。
+
+### 已验证主线
+- [x] Character 移动、视角、蹲伏、瞄准和 Enhanced Input
+- [x] 武器拾取、装备、掉落、双武器、弹药和换弹
+- [x] Server 权威 Projectile/Hitscan/Shotgun、伤害、淘汰、计分和重生
+- [x] 比赛阶段、GameState 时间/公告、PlayerState 统计和 HUD
+- [x] Listen Server + 1 Client PIE、Development 构建及多条失败路径
+
+### 明确边界
+- [ ] FABRIK 最终 AnimGraph 接线和完整视觉打磨
+- [ ] Teams/CTF、Projectile/Shotgun SSR、预测弹药和断线重连
+- [ ] 跨机器公网 Steam、Dedicated Server、Cook/Stage 完整发布验收
+- [ ] Dodge/翻滚、正式武器差异化模型、完整音效和最终美术打磨
 
 ## AI 行为规则
 
@@ -186,6 +191,10 @@ Blaster/
 除非用户明确要求一次规划多个任务，每次只推进一个 `TASK-Bxx-yyy` 垂直切片。开始实现前必须完成 Gate 0：冻结目标、所有权/网络数据流、文件白名单、编辑器操作、验收证据与非目标。课程原始实现基于 UE5.0；每张任务卡均须记录 UE5.6 迁移检查，不能直接照搬旧 API。
 
 任务完成的最低证据为 Development Editor Build、Listen Server + 1 Client PIE 主路径，以及一个失败路径。完成后先独立审查；只有结论为 `PASS` 或 `PASS WITH FOLLOW-UP` 才能归档，并且只推荐一个下一任务。
+
+### 教学优先
+
+当用户明确表示没有相关知识储备时，必须先从零讲解概念、代码位置、端到端数据流和验证方法，再邀请用户用自己的话复述或回答简单检查题。不得在尚未教学前直接要求用户复述、作答或承担 Gate 阻塞；用户不会回答时，继续提供示例和分步引导。
 
 ### 通用规则
 1. 回答必须优先考虑 UE5.6 和 C++
@@ -361,8 +370,25 @@ Blaster/
 
 ### 6. 学习知识库
 
-每次完成新功能或解决重要 Bug 后，在 `.agents/learning-journal.md` 中追加记录。该文档按技术主题分类，记录知识点、代码示例和工程经验，用于复习和面试准备。
-在 Codex 中可以直接问：学习知识库中关于 [主题] 的内容。
+项目根目录 `learn/` 是持续维护的学习知识库。新知识点必须放入对应主题目录，不再把所有内容无限追加到单一文件：
+
+- `learn/animation/`：动画序列、Blend Space、Aim Offset、IK、移动姿势和 Persona。
+- `learn/networking/`：角色移动复制、RPC、Ownership、RepNotify、Listen Server PIE。
+- `learn/cpp/`：UE C++、反射、GC、生命周期、模块和 UE5.6 API 迁移。
+- `learn/editor/`：只能由用户完成的 UE Editor 点击路径、字段、预期结果和排查方法。
+- `learn/debugging/`：编译、日志、工具链和故障复盘。
+
+`.agents/learning-journal.md` 保留已有历史知识，作为迁移参考；新内容优先写入 `learn/`，必要时在历史文档中添加指向新条目的索引。在 Codex 中可以直接问：学习知识库中关于 [主题] 的内容。
+
+### 6.1 自动推进与 Editor 边界
+
+Codex 应自动完成读取、分析、C++ 修改、文档记录、构建、日志检查和可自动执行的验证。只有以下情况才暂停并交给用户：
+
+1. 必须在 Unreal Editor 中点击、拖拽或保存资产；
+2. 进入一个阶段的 review、复盘或需要用户确认取舍；
+3. 遇到权限、破坏性操作或缺少外部证据的阻塞。
+
+凡是交给用户的 Editor 操作，必须使用从项目根目录开始的完整相对路径，例如 `Content/Blueprints/Character/Animation/ABP_Blaster`，并写明面板、字段、预期结果和失败排查；不得只给模糊的资产名称或猜测路径。
 
 ### 7. 项目工作日志
 
@@ -377,7 +403,7 @@ Blaster/
 - 编译、测试或尚未验证的事项
 - UE 编辑器中的操作和后续待办
 
- `worklog.md` 用于记录协作过程与工程决策；`learning-journal.md` 继续用于沉淀可复习的技术知识。即使本轮只进行了分析、答疑或方案研讨而没有修改代码，也必须记录结论。
+ `worklog.md` 用于记录协作过程与工程决策；`learn/` 用于按主题沉淀可复习的技术知识，`learning-journal.md` 仅保留历史知识和迁移索引。即使本轮只进行了分析、答疑或方案研讨而没有修改代码，也必须记录结论。
 
 ### 8. 代码复盘与概念教学
 

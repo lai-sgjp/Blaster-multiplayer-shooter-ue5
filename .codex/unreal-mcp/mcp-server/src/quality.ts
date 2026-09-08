@@ -1,0 +1,660 @@
+/**
+ * Blueprint quality review.
+ *
+ * The premise of this file: a weak model does not fail because it lacks capability, it fails
+ * because it has no feedback. It writes a graph, nothing objects, and it declares victory. A
+ * strong model has the same problem in a smaller way. Compilation is the only signal either of
+ * them gets, and compilation is a very low bar: a graph full of dead nodes, unhandled cast
+ * failures, and leftover debug prints compiles perfectly.
+ *
+ * So this is the missing signal. Every check below is something a senior Unreal developer would
+ * actually flag in review, computed from a single cheap graph read, and reported with the exact
+ * fix. A model that runs it can self-correct; a model that never runs it still gets the findings,
+ * because unreal_build_graph attaches them to its own result.
+ *
+ * Every check is deliberately conservative. A false positive teaches a model to distrust the
+ * whole report, which is worse than a missed finding.
+ */
+
+import { execTargets as followExec } from "./execFlow.js";
+import type { LayoutNode } from "./layout.js";
+import { groupIntoChains, isEventNode } from "./layout.js";
+
+export type Severity = "error" | "warning" | "info";
+
+export interface Finding {
+  /** Stable machine-readable id, so a caller can suppress or count a category. */
+  check: string;
+  severity: Severity;
+  /** What is wrong, in one sentence. */
+  message: string;
+  /** What to do about it, concretely enough to act on without further thought. */
+  fix: string;
+  /** Node ids this finding is about, so the caller can go straight there. */
+  nodeIds: string[];
+}
+
+export interface QualityReport {
+  graphName: string;
+  nodeCount: number;
+  /** 0-100 heuristic: 100 minus 8 per error, 4 per warning, 1 per info. Not a measure of correctness. */
+  score: number;
+  summary: { errors: number; warnings: number; infos: number };
+  findings: Finding[];
+}
+
+/** Node counts above this in one graph are a structure problem, not a style preference. */
+const GRAPH_TOO_LARGE = 60;
+/** A single execution chain longer than this should be a function with a name. */
+const CHAIN_TOO_LONG = 20;
+/** An Event Tick chain longer than this is doing real per-frame work and deserves a second look. */
+const TICK_CHAIN_HEAVY = 6;
+
+const PLACEHOLDER_NAME = /^(new ?var|var|variable|temp|tmp|test|untitled|foo|bar|baz|thing|stuff|data|value)\s*\d*$/i;
+
+function isComment(node: LayoutNode): boolean {
+  return node.type === "EdGraphNode_Comment" || node.type.endsWith("_Comment");
+}
+
+function connectedPinNames(node: LayoutNode): Set<string> {
+  return new Set((node.connectedPins ?? []).map((pin) => pin.pin.trim().toLowerCase()));
+}
+
+function hasAnyConnection(node: LayoutNode): boolean {
+  return (node.connectedPins ?? []).some((pin) => (pin.linkedTo ?? []).length > 0);
+}
+
+/** Variable nodes carry the variable's name as their title; call nodes carry the function's. */
+function variableName(node: LayoutNode): string | undefined {
+  if (!/^K2Node_Variable(Get|Set)/.test(node.type)) return undefined;
+  // Titles arrive as "Health", "Set Health", or "SET" depending on node and engine version.
+  return node.title.replace(/^set\s+/i, "").trim();
+}
+
+export interface ReviewContext {
+  /**
+   * This Blueprint is an Interface.
+   *
+   * A Blueprint Interface declares signatures and nothing else - its function graphs are empty by
+   * design, and that is the whole point of an interface rather than a defect. Reporting every one of
+   * them as "has no body" is the same mistake unhandled-cast-failure made: a check firing on
+   * ordinary, correct practice, at a cost that puts it near real bugs.
+   */
+  isInterface?: boolean;
+  /**
+   * Names that are really event dispatchers, not functions.
+   *
+   * An event dispatcher is a `mcdelegate` VARIABLE, and Unreal also exposes its signature as a graph
+   * with a K2Node_FunctionEntry and nothing wired to it - because a signature has no body, by
+   * definition. Without this, `empty-function` reports every dispatcher in the project.
+   *
+   * Caught on BP_Player: `ChangeHealth` and `SendMessageToHUD` appear in the graph list AND in the
+   * variable list as mcdelegate. The graph read shows an entry node with connectedPins: [], which is
+   * indistinguishable from an unfinished function unless you know what the name is.
+   */
+  delegateNames?: Set<string>;
+}
+
+export function reviewGraph(graphName: string, allNodes: LayoutNode[], context: ReviewContext = {}): QualityReport {
+  const nodes = allNodes.filter((node) => !isComment(node));
+  const commentBoxes = allNodes.filter(isComment);
+  const findings: Finding[] = [];
+
+  // --- What runs every frame -------------------------------------------------------------------
+  //
+  // The checks below are the difference between a graph that works and one a team can live with,
+  // and they are the ones a model is least likely to get right on its own. Each is named in the
+  // handbook's performance section; each was seen in a real eight-month-old project on the first
+  // afternoon anyone looked.
+  //
+  // All of them ask the same question - "does this run every frame?" - so reachability from Tick is
+  // computed once here rather than three times below.
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  // Shared with the graph reader, so "does this run every frame" cannot answer differently from
+  // "what runs here" - and so reroute nodes are stepped over in both.
+  const execTargets = (node: LayoutNode): LayoutNode[] => followExec(node, byId);
+
+  const tickEvent = nodes.find((node) => isEventNode(node) && /\bTick\b/i.test(node.title ?? ""));
+  const runsEveryFrame = new Set<string>();
+  if (tickEvent) {
+    const queue = [tickEvent];
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (!current || runsEveryFrame.has(current.id)) continue;
+      runsEveryFrame.add(current.id);
+      queue.push(...execTargets(current));
+    }
+    runsEveryFrame.delete(tickEvent.id);
+  }
+
+  const inTick = (node: LayoutNode) => runsEveryFrame.has(node.id);
+  const titleOf = (node: LayoutNode) => node.title ?? "";
+
+  // --- Walking the level, repeatedly. ---
+  // GetAllActorsOfClass iterates every actor in the level. Once at BeginPlay is ordinary; once per
+  // frame is the single most common cause of a Blueprint project losing its framerate for reasons
+  // nobody can find.
+  const actorSweeps = nodes.filter((node) => /GetAllActorsOf/i.test(titleOf(node)));
+  const sweepsInTick = actorSweeps.filter(inTick);
+  if (sweepsInTick.length > 0) {
+    findings.push({
+      check: "level-sweep-every-frame",
+      severity: "error",
+      message: `${sweepsInTick.length} Get All Actors Of Class call(s) run every frame from Event Tick.`,
+      fix:
+        "This walks every actor in the level, 60+ times a second. Do it once on BeginPlay and store the " +
+        "result in a variable, or replace it with an overlap event, a dispatcher, or a list the actors " +
+        "add themselves to when they spawn.",
+      nodeIds: sweepsInTick.map((node) => node.id),
+    });
+  } else if (actorSweeps.length > 0 && nodes.some((node) => /Set Timer/i.test(titleOf(node)))) {
+    // A timer is not Tick, but it repeats, and a level sweep on a repeating path costs the same
+    // thing slightly less often. This is where the real project's cost actually was: a timer
+    // started a scan event, and the scan walked every actor in the level.
+    //
+    // Phrased as a question rather than an accusation, and only info, because proving the timer
+    // drives THIS chain needs the timer's function-name pin value - which a graph summary
+    // deliberately omits. Saying "these two things are here, check whether they are connected" is
+    // honest; asserting it would be a guess dressed as a finding.
+    findings.push({
+      check: "level-sweep-maybe-repeating",
+      severity: "info",
+      message:
+        `This graph both sets a timer and calls Get All Actors Of Class ${actorSweeps.length} time(s).`,
+      fix:
+        "If the timer drives the chain that sweeps, the whole level is being walked on every tick of " +
+        "that timer. Gather the actors once and store them, or have actors register themselves as " +
+        "they spawn, and keep the timer for the cheap part.",
+      nodeIds: actorSweeps.map((node) => node.id),
+    });
+  } else if (actorSweeps.length > 2) {
+    findings.push({
+      check: "level-sweep-repeated",
+      severity: "info",
+      message: `${actorSweeps.length} Get All Actors Of Class calls in one graph.`,
+      fix:
+        "Each one walks the whole level. If they are looking for the same thing, do it once and store " +
+        "the result; if they run on a timer, consider having the actors register themselves instead.",
+      nodeIds: actorSweeps.map((node) => node.id),
+    });
+  }
+
+  // --- Moving a character only on the server. ---
+  //
+  // CharacterMovementComponent is client-predicted and server-corrected: the owning client simulates
+  // its own movement and sends the result up, and the server corrects it when the two disagree. So a
+  // force applied ONLY on the server is a disagreement by construction - the client never predicts
+  // it, the server insists on it, and the correction that follows is what a player sees as
+  // rubber-banding.
+  //
+  // Found in a real game, where the drag of a vacuum ability was gated on Has Authority. It rubber-
+  // banded for every player except the listen-server host, who never noticed because the host IS the
+  // authority - which is exactly why this survives testing.
+  //
+  // The fix is not to remove the gate. It is to apply the movement where the pawn is PREDICTED -
+  // Is Locally Controlled - and to replicate whatever values that calculation reads, so the client
+  // computes the same force the server would.
+  const authorityNodes = nodes.filter((node) => /Has Authority|Switch Has Authority/i.test(titleOf(node)));
+  if (authorityNodes.length > 0) {
+    // Only the branch arm that runs WHEN the check passes. The other arm is the client path and is
+    // exactly where this movement usually belongs.
+    const serverOnly = new Set<string>();
+    for (const auth of authorityNodes) {
+      const gated =
+        auth.type === "K2Node_SwitchHasAuthority"
+          ? (auth.connectedPins ?? []).filter((pin) => /^Authority$/i.test(pin.pin))
+          : nodes
+              .filter((node) =>
+                (node.connectedPins ?? []).some(
+                  (pin) => pin.pin === "Condition" && (pin.linkedTo ?? []).some((link) => link.node.startsWith(auth.id))
+                )
+              )
+              .flatMap((branch) => (branch.connectedPins ?? []).filter((pin) => pin.pin === "then"));
+      const queue = gated.flatMap((pin) => (pin.linkedTo ?? []).map((link) => byId.get(link.node)).filter(Boolean));
+      while (queue.length > 0) {
+        const current = queue.pop() as LayoutNode;
+        if (serverOnly.has(current.id)) continue;
+        serverOnly.add(current.id);
+        for (const next of execTargets(current)) queue.push(next);
+      }
+    }
+
+    // Character movement specifically. Setting a replicated actor's location from the server is
+    // ordinary and correct; it is the predicted movement of a Character that must not be.
+    const MOVEMENT = /Add Force|Add Impulse|Launch Character|Add Movement Input|Set Velocity|Add Torque|Set Physics Linear Velocity/i;
+    const serverMoves = nodes.filter(
+      (node) => serverOnly.has(node.id) && MOVEMENT.test(titleOf(node)) && /Character/i.test(titleOf(node))
+    );
+    if (serverMoves.length > 0) {
+      findings.push({
+        check: "authority-gated-character-movement",
+        severity: "warning",
+        message:
+          `${serverMoves.length} character movement call(s) run only when Has Authority is true. On a ` +
+          `client-controlled character the client predicts its own movement, so a force the server ` +
+          `applies alone is a correction waiting to happen - the player sees rubber-banding.`,
+        fix:
+          "Moving the gate to Is Locally Controlled is the usual answer, and it is NOT a safe " +
+          "one-line change - it was tried on the graph this check was written from and made the " +
+          "symptom worse. Before moving it, find out where the values the force reads are written. " +
+          "If they are computed locally on whichever machine runs the ability, replicating them to " +
+          "hand the client the server's copy will stomp the local one and the force will flicker " +
+          "between its real value and the default; the pawn then judders in place instead of " +
+          "moving, which looks like the character refusing to be pulled. The other direction - " +
+          "sending the impulse to the owning client through a Client RPC and letting it predict - " +
+          "avoids that, because nothing changes ownership. Either way, TEST IT IN PLAY: a " +
+          "listen-server host never sees this bug at all, because the host is the authority.",
+        nodeIds: serverMoves.map((node) => node.id),
+      });
+    }
+  }
+
+  // --- Casting every frame instead of once. ---
+  const castsInTick = nodes.filter((node) => /^K2Node_DynamicCast/.test(node.type) && inTick(node));
+  if (castsInTick.length > 0) {
+    findings.push({
+      check: "cast-every-frame",
+      severity: "warning",
+      message: `${castsInTick.length} cast(s) run every frame from Event Tick.`,
+      fix:
+        "A cast is not free and the answer does not change. Cast once on BeginPlay, store the result in " +
+        "a variable of that type, and read the variable here. If the target can change, cast when it " +
+        "changes rather than when it is used.",
+      nodeIds: castsInTick.map((node) => node.id),
+    });
+  }
+
+  // --- Spawning and destroying every frame. ---
+  const spawnsInTick = nodes.filter(
+    (node) => /(SpawnActor|Spawn Actor|DestroyActor|Destroy Actor)/i.test(titleOf(node)) && inTick(node)
+  );
+  if (spawnsInTick.length > 0) {
+    findings.push({
+      check: "spawn-every-frame",
+      severity: "error",
+      message: `${spawnsInTick.length} spawn/destroy call(s) run every frame from Event Tick.`,
+      fix:
+        "Creating and destroying actors every frame is the most expensive thing a Blueprint can do. " +
+        "Spawn on the event that actually causes it, or keep a pool of actors and reuse them.",
+      nodeIds: spawnsInTick.map((node) => node.id),
+    });
+  }
+
+  // --- Dead nodes: wired to nothing, doing nothing, but shipped anyway. ---
+  // Events are excluded, and the reason is the whole safety argument for automatic cleanup.
+  //
+  // An unconnected Event node satisfies "connected to nothing", but deleting one is not the same as
+  // deleting a stray expression. On a Blueprint whose PARENT is also a Blueprint, an empty override
+  // event suppresses the parent's implementation - so removing it restores parent behaviour, which
+  // is a behaviour change, which is exactly what cleanup promises never to do.
+  //
+  // Found on real code: cleanup reported "2 dead nodes will be removed" and, in the same result,
+  // "2 empty events - only you know which was intended". They were the same two nodes. The tool
+  // refused to decide and then decided anyway.
+  //
+  // They are still reported, by the empty-event check, which cleanup leaves alone.
+  const dead = nodes.filter((node) => !hasAnyConnection(node) && !isEventNode(node));
+  if (dead.length > 0 && nodes.length > 1) {
+    findings.push({
+      check: "dead-node",
+      severity: "warning",
+      message: `${dead.length} node(s) are not connected to anything and will never run.`,
+      fix: "Remove them with unreal_remove_node, or wire them into the graph if they were meant to be used.",
+      nodeIds: dead.map((node) => node.id),
+    });
+  }
+
+  // --- A function with nothing in it ---
+  //
+  // Found by asking a real question. "The countdown never shows up" on the project this is developed
+  // against: GS_Gameplay has ShowCountdown, UpdateCountdown and HideCountdown, and every one of them
+  // is a function entry node with nothing wired to it. Ten more like it on the same Blueprint -
+  // RoundBegin, RoundEnd, PlayerJoined, TutorialEnd - a system scaffolded and never filled in.
+  //
+  // The audit said nothing about any of them. `empty-event` covers events; nothing covered a
+  // FUNCTION whose body is empty, which is the case where a caller exists and its call does nothing.
+  //
+  // Two exclusions, both to avoid reporting something already reported or never wrong:
+  //
+  //   UserConstructionScript  every Blueprint has one and empty is the normal state
+  //   OnRep_*                 repnotify-does-nothing already covers these, at its own cost
+  //   a Blueprint Interface   its graphs are signatures; empty is the entire point
+  //   an event dispatcher     Unreal exposes its signature as a graph with an empty entry node,
+  //                           and BP_Player has two - ChangeHealth and SendMessageToHUD - which are
+  //                           mcdelegate VARIABLES that also appear in the graph list
+  //
+  // Whether it matters turns on something this check cannot see - is it called? - so the fix names
+  // the call that settles it rather than asserting. That is the same shape as the parent-call and
+  // replaced-system findings, and it is why this is priced below repnotify-does-nothing: an empty
+  // RepNotify is definitely wrong, because choosing RepNotify and then writing nothing has no reading
+  // in which it is intended. An empty function might be a stub somebody means to fill this afternoon.
+  const functionEntry = nodes.find((node) => /^K2Node_FunctionEntry/.test(node.type));
+  const isConstructionScript = /^UserConstructionScript$/i.test(graphName);
+  const isRepNotify = /^OnRep_/i.test(graphName);
+  const isDelegateSignature = context.delegateNames?.has(graphName) === true;
+  if (
+    functionEntry &&
+    !context.isInterface &&
+    !isConstructionScript &&
+    !isRepNotify &&
+    !isDelegateSignature &&
+    execTargets(functionEntry).length === 0
+  ) {
+    findings.push({
+      check: "empty-function",
+      severity: "warning",
+      message: `${graphName} has no body: its entry node runs into nothing.`,
+      fix:
+        `Whether this matters depends on whether anything calls it. unreal_trace_function_calls on ` +
+        `"${graphName}" settles that in one call: a caller means every one of those calls silently ` +
+        `does nothing, which is the hardest kind of bug to find from the outside because there is no ` +
+        `error and no missing node - the call is right there in the graph. No caller means it is a ` +
+        `stub, and the only question is whether it was meant to be filled in.`,
+      nodeIds: [functionEntry.id],
+    });
+  }
+
+  // --- Casts whose failure path is unhandled ---
+  //
+  // This was the loudest check in the audit by a wide margin and most of it was not a bug. On a real
+  // 150-Blueprint project it fired 63 times at cost 90 - a weight of 5,670, four and a half times the
+  // next finding - and it was drowning the nine cast-to-server-only-class findings at cost 100 that
+  // ARE decisive. The ranking is the entire product of this tool; a check that shouts over the ones
+  // that matter is worse than one that says nothing.
+  //
+  // It flagged every DynamicCast with an unwired Cast Failed pin, which is ordinary, correct
+  // Blueprint. Two kinds of evidence separate the ones worth reporting, and both are already here.
+  //
+  // A cast nothing runs cannot fail. Found in the data: BP_Player's GetAnimBP has a Cast node whose
+  // `execute` pin is linked to nothing at all - reported as a silent-failure risk when it is simply
+  // never reached. Noise on top of noise.
+  //
+  // A cast reached from an overlap, hit or damage event IS the filter. DetectPlayerInSphere casts
+  // every overlapping actor to BP_Player, and the failure path is how it rejects the ones that are
+  // not players - stopping is the whole point, and wiring Cast Failed would be wiring "do nothing"
+  // to "do nothing". That is the shape of most of the 63.
+  //
+  // What is left is the case the check was written for: a cast on a setup path, where failing means
+  // the rest of the initialisation silently never happens.
+  const FILTERING_EVENT = /overlap|hit|damage|touch/i;
+  const filterEvents = nodes.filter((node) => isEventNode(node) && FILTERING_EVENT.test(titleOf(node)));
+  const reachedByFilter = new Set<string>();
+  for (const event of filterEvents) {
+    const queue = [event];
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (!current || reachedByFilter.has(current.id)) continue;
+      reachedByFilter.add(current.id);
+      queue.push(...execTargets(current));
+    }
+  }
+
+  const isCast = (node: LayoutNode) => /^K2Node_DynamicCast/.test(node.type);
+  const failureUnwired = (node: LayoutNode) => {
+    const pins = connectedPinNames(node);
+    // Only connected pins are reported, so a missing "cast failed" means it is wired to nothing.
+    return !pins.has("cast failed") && !pins.has("castfailed");
+  };
+  // An impure cast that nothing runs into. `execute` absent from the connected set means unwired.
+  const neverRuns = (node: LayoutNode) => {
+    const pins = connectedPinNames(node);
+    return !pins.has("execute") && !pins.has("exec");
+  };
+
+  // The other half of "this cast is the filter", and the half the event walk misses: what feeds the
+  // Object pin. Seen in BP_Player's event graph - a cast fed by a For Each Loop over actors, and one
+  // fed by Break Hit Result off a line trace. Neither is reached from an overlap event, and in both
+  // the failed cast is how the wrong thing gets rejected. Wiring Cast Failed there would be wiring
+  // "do nothing" to "do nothing".
+  const FILTERING_SOURCE = /for ?each|for ?loop|get all actors|overlapping|break hit result|line trace|sphere trace|box trace|sphere overlap|box overlap|capsule/i;
+  const feedsFrom = (node: LayoutNode): LayoutNode[] => {
+    const out: LayoutNode[] = [];
+    for (const pin of node.connectedPins ?? []) {
+      if (pin.direction !== "in") continue;
+      if (/^(execute|exec)$/i.test(pin.pin)) continue;
+      for (const link of pin.linkedTo ?? []) {
+        const source = byId.get(link.node);
+        if (source) out.push(source);
+      }
+    }
+    return out;
+  };
+  const fedByCollection = (node: LayoutNode) => feedsFrom(node).some((n) => FILTERING_SOURCE.test(titleOf(n)));
+
+  const candidates = nodes.filter((node) => isCast(node) && failureUnwired(node));
+  const isFiltering = (node: LayoutNode) => reachedByFilter.has(node.id) || fedByCollection(node);
+  const unhandledCasts = candidates.filter((node) => !neverRuns(node) && !isFiltering(node));
+  const asFilter = candidates.filter((node) => !neverRuns(node) && isFiltering(node));
+  const unreachable = candidates.filter((node) => neverRuns(node));
+
+  if (unhandledCasts.length > 0) {
+    findings.push({
+      check: "unhandled-cast-failure",
+      severity: "warning",
+      message:
+        `${unhandledCasts.length} Cast node(s) on a running path leave the "Cast Failed" path unhandled.` +
+        (asFilter.length > 0 || unreachable.length > 0
+          ? ` (${asFilter.length + unreachable.length} more were not counted: ` +
+            [
+              asFilter.length > 0 ? `${asFilter.length} filtering - reached from an overlap or hit event, or fed by a loop or trace result, where a failed cast IS the filter` : "",
+              unreachable.length > 0 ? `${unreachable.length} with no execution reaching them at all` : "",
+            ]
+              .filter(Boolean)
+              .join("; ") +
+            ".)"
+          : ""),
+      fix:
+        "Wire Cast Failed to whatever should happen when the object is not that class. If the honest answer " +
+        "is \"nothing\", the cast is filtering and this is not a defect - which is why casts reached from an " +
+        "overlap or hit event are not counted here.",
+      nodeIds: unhandledCasts.map((node) => node.id),
+    });
+  }
+
+  // --- Debug output left in. ---
+  const prints = nodes.filter((node) => /^print\s*string$/i.test(node.title.trim()));
+  if (prints.length > 0) {
+    findings.push({
+      check: "debug-print-left-in",
+      severity: "warning",
+      message: `${prints.length} Print String node(s) are still in this graph.`,
+      fix:
+        "Remove them before calling the feature done, or confirm they are deliberate developer output. " +
+        "Print String ships in development builds and is the most common thing left behind in AI-authored graphs.",
+      nodeIds: prints.map((node) => node.id),
+    });
+  }
+
+  // --- Placeholder names. A graph full of NewVar is not a finished graph. ---
+  const placeholders = nodes.filter((node) => {
+    const name = variableName(node);
+    return name !== undefined && PLACEHOLDER_NAME.test(name);
+  });
+  if (placeholders.length > 0) {
+    const names = [...new Set(placeholders.map((node) => variableName(node)!))];
+    findings.push({
+      check: "placeholder-name",
+      severity: "warning",
+      message: `Variables with placeholder names are in use: ${names.join(", ")}.`,
+      fix:
+        "Rename them to say what they hold. A human inheriting this Blueprint reads the variable names first, " +
+        "and a name like NewVar costs them the time it takes to trace every use.",
+      nodeIds: placeholders.map((node) => node.id),
+    });
+  }
+
+  const chains = groupIntoChains(nodes);
+
+  // --- Unlabelled sections. ---
+  //
+  // The threshold used to be "2 or more chains and fewer comment boxes than chains", which is very
+  // nearly every graph anyone has ever written. Measured across this project: 344 findings out of
+  // 834, so FORTY-ONE PERCENT of everything the audit said was this one info-level note about
+  // comment boxes - more than every multiplayer, replication and dead-logic check combined.
+  //
+  // That is the failure this file already names twice: a check that fires on ordinary correct
+  // practice is noise, and noise is how a report stops being read. A seven-node function with two
+  // chains and no comment box is not hard to read; it is a seven-node function.
+  //
+  // What the finding actually claims is that a reader cannot see the structure without tracing
+  // wires. That is a property of SIZE, so it is now gated on size: a big graph, several distinct
+  // chains, and no labelling at all. A graph that has made any attempt to label itself is left
+  // alone, because "you have four boxes and five chains" is advice nobody needs.
+  //
+  // Deliberately not raised to a warning. It has no runtime consequence, and the one piece of
+  // direct human feedback this project has on the subject is that machine-added comment boxes were
+  // too big and too many - so this should nudge at the extreme and stay quiet everywhere else.
+  const UNLABELLED_MIN_NODES = 40;
+  const UNLABELLED_MIN_CHAINS = 3;
+  if (
+    nodes.length >= UNLABELLED_MIN_NODES &&
+    chains.length >= UNLABELLED_MIN_CHAINS &&
+    commentBoxes.length === 0
+  ) {
+    findings.push({
+      check: "unlabelled-sections",
+      severity: "info",
+      message: `${nodes.length} nodes across ${chains.length} execution chains, with no comment boxes at all.`,
+      fix:
+        "Run unreal_auto_layout_graph, which wraps each execution chain in a comment box titled after its " +
+        "event. A reader should be able to see the graph's structure without tracing a single wire.",
+      nodeIds: chains.map((chain) => chain.rootId),
+    });
+  }
+
+  // --- Per-frame work. ---
+  for (const chain of chains) {
+    const root = nodes.find((node) => node.id === chain.rootId);
+    if (!root || !/tick/i.test(root.title)) continue;
+    if (chain.nodeIds.length > TICK_CHAIN_HEAVY) {
+      findings.push({
+        check: "tick-heavy",
+        severity: "warning",
+        message: `Event Tick runs ${chain.nodeIds.length} nodes every frame.`,
+        fix:
+          "Move what can be event-driven onto the event that actually changes the value, or onto a timer with " +
+          "an interval. Per-frame work is the first thing a performance pass deletes, and the easiest to avoid " +
+          "writing in the first place.",
+        nodeIds: [chain.rootId],
+      });
+    }
+  }
+
+  // --- Structure: graphs and chains that should have been functions. ---
+  if (nodes.length > GRAPH_TOO_LARGE) {
+    findings.push({
+      check: "graph-too-large",
+      severity: "warning",
+      message: `This graph has ${nodes.length} nodes, past the point where it can be read at a glance.`,
+      fix:
+        "Extract coherent sections into named functions with unreal_create_function and call them from here. " +
+        "The EventGraph should read as a table of contents, not as the whole implementation.",
+      nodeIds: [],
+    });
+  }
+  for (const chain of chains) {
+    if (chain.nodeIds.length <= CHAIN_TOO_LONG) continue;
+    findings.push({
+      check: "long-exec-chain",
+      severity: "info",
+      message: `The "${chain.title}" chain is ${chain.nodeIds.length} nodes long.`,
+      fix:
+        "Extract the middle of it into a named function. A long chain hides what it does behind the effort of " +
+        "reading all of it; a function name states it.",
+      nodeIds: [chain.rootId],
+    });
+  }
+
+  // --- Branches that decide nothing. ---
+  //
+  // This replaces a check that could never fire. It asked whether exactly one of the pins named
+  // "true"/"false" was connected; a K2Node_IfThenElse names its exec outputs `then` and `else` -
+  // measured on a real project, 229 `then` and 128 `else`, and not one "true" or "false". So the
+  // condition was `false !== false` at every Branch in every graph, and branch-dead-path has never
+  // produced a finding while sitting in the cost table at 60.
+  //
+  // Repairing it as written was the obvious move and it is the wrong one. On the same project, 147
+  // of 254 Branches have only one arm wired - 58%, and nearly all of them correctly, because "do
+  // this if the condition holds, otherwise nothing" is how a Branch is normally used. A check that
+  // fires on 58% of a construct is noise, and this project's own comments are full of the cost of
+  // that.
+  //
+  // What IS a defect, always, is a Branch whose arms go to the SAME node. The condition is computed
+  // and thrown away, which means a guard that was intended is not guarding. Three on that project,
+  // and one of them is BP_FireWall.TakeDamage:
+  //
+  //   Branch (IsBeingRepaired)  then -> Set Health
+  //                             else -> Set Health
+  //
+  // so CheckEndInteract runs on RepairingPlayerRef whether or not anybody is repairing, and the
+  // PIE log carries 40 "Accessed None" for exactly that, every session.
+  const pointlessBranches = nodes.filter((node) => {
+    if (!/^K2Node_IfThenElse/.test(node.type)) return false;
+    const wired = (node.connectedPins ?? []).filter(
+      (pin) => pin.direction === "out" && (pin.linkedTo ?? []).length > 0
+    );
+    if (wired.length !== 2) return false;
+    // Node AND pin, not node alone. Comparing only the node calls every boolean function in the
+    // project a defect: a function's Outputs is ONE tunnel node, so `then -> Outputs.Cannot` and
+    // `else -> Outputs.Can` are two arms landing on the same node and deciding everything.
+    //
+    // Found by reading BP_Player/CanShoot after this check flagged it - a Branch on
+    // (EnergyCooldown OR isVaccuming OR inCutscene) feeding Cannot and Can, which is exactly how
+    // the construct is meant to look. This check was written in this repo to replace an earlier one
+    // that fired on 58% of Branches, and it had the same defect in a narrower form.
+    //
+    // The real case still fires: BP_FireWall.TakeDamage sends both arms into Set Health's single
+    // `execute` pin, so node and pin both match.
+    const targets = wired.map((pin) => {
+      const link = (pin.linkedTo ?? [])[0];
+      return link ? `${link.node}.${link.pin}` : undefined;
+    });
+    return targets[0] !== undefined && targets[0] === targets[1];
+  });
+  for (const branch of pointlessBranches) {
+    findings.push({
+      check: "branch-decides-nothing",
+      severity: "warning",
+      message: `A Branch sends both True and False to the same node, so its condition changes nothing.`,
+      fix:
+        "Either wire one arm somewhere else, or delete the Branch. It reads as a guard and is not one, so " +
+        "anything downstream that the condition was meant to protect runs unconditionally - which is usually " +
+        "how a null reference gets read.",
+      nodeIds: [branch.id],
+    });
+  }
+
+  // --- Events that lead nowhere. ---
+  const emptyEvents = nodes.filter((node) => {
+    if (!isEventNode(node)) return false;
+    // A ghost node is UE's greyed-out placeholder - the BeginPlay and Tick that appear in every new
+    // Blueprint before anyone has used them. They are not events wired to nothing, they are events
+    // nobody has written yet, and flagging them meant a feature that compiled cleanly still failed
+    // verification for two nodes this server had created itself moments earlier.
+    if ((node as { ghost?: boolean }).ghost === true) return false;
+    return !(node.connectedPins ?? []).some((pin) => pin.direction === "out" && (pin.linkedTo ?? []).length > 0);
+  });
+  if (emptyEvents.length > 0) {
+    findings.push({
+      check: "empty-event",
+      severity: "warning",
+      message: `${emptyEvents.length} event node(s) have nothing wired to their output.`,
+      fix:
+        "Either implement the event or remove it. An empty event reads as an intention that was never finished, " +
+        "and a reader cannot tell which.",
+      nodeIds: emptyEvents.map((node) => node.id),
+    });
+  }
+
+  const summary = {
+    errors: findings.filter((f) => f.severity === "error").length,
+    warnings: findings.filter((f) => f.severity === "warning").length,
+    infos: findings.filter((f) => f.severity === "info").length,
+  };
+  const score = Math.max(0, 100 - summary.errors * 8 - summary.warnings * 4 - summary.infos * 1);
+
+  const order: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
+  findings.sort((a, b) => order[a.severity] - order[b.severity] || a.check.localeCompare(b.check));
+
+  return { graphName, nodeCount: nodes.length, score, summary, findings };
+}

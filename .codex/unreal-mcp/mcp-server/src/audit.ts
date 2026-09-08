@@ -1,0 +1,1404 @@
+/**
+ * Auditing a whole project, ranked by what a finding is likely to cost.
+ *
+ * Every other tool here answers a question about one Blueprint. That is the right shape for an
+ * agent mid-task and the wrong shape for the question people actually arrive with:
+ *
+ *   "My game has bugs and a deadline. Where do I look?"
+ *
+ * This existed as a script first, which meant the model could not run it - the single most useful
+ * thing in the project was available to a person at a terminal and to nobody else. It lives here so
+ * both can use it.
+ *
+ * ## Ordering
+ *
+ * By likely cost, not by severity, and the two are not the same. A dead event is cosmetic until
+ * someone wires it. A cast that fails on every client but the host is a bug report nobody can
+ * reproduce alone, which is exactly how it survives to a showcase. The order below is the order to
+ * work in with a limited afternoon.
+ *
+ * ## Cost of running it
+ *
+ * It reads what an agent would read anyway - the project index and one graph summary per graph -
+ * so the bridge cost is bounded and predictable. The RESULT is deliberately small: counts, the
+ * ranked groups, and a handful of examples each. A ranked list of eight hundred findings is the
+ * same as no list.
+ */
+
+import type { BridgeLike } from "./autoLayout.js";
+import { auditDataTables } from "./dataTableAudit.js";
+import { reviewBlueprint } from "./review.js";
+import { findServerOnlyCasts, classNameFromCastTitle } from "./multiplayer.js";
+import { reviewSessions, type SessionGraph } from "./sessions.js";
+import { findServerSideUi, findEmptyRepNotifies } from "./clientSync.js";
+import { buildCallers, resolveServerAuthority, type AuthorityUnit } from "./authorityMap.js";
+import { findUncalledParentEvents } from "./parentCalls.js";
+import { findSequenceProblems, type SequenceReadReply } from "./sequenceAudit.js";
+import { FINDING_COST } from "./findingCost.js";
+import { execTargets, type FlowNode } from "./execFlow.js";
+import { findDeadGraphs, type LivenessGraph } from "./systemLiveness.js";
+import { findAnimStateMachineFaults } from "./animAudit.js";
+import { findGameModeWiringFaults, type GameModeDefaults } from "./gameModeWiring.js";
+import { findReplicationFlagFaults, type ReplicationSubject } from "./replicationFlag.js";
+import { findNiagaraFaults } from "./niagaraAudit.js";
+import { explainGraph } from "./explainGraph.js";
+
+
+
+const WHY_IT_COSTS: Record<string, string> = {
+  "reads-server-only-variable":
+    "A variable holding a GameMode is null on every client, so the Get returns None and everything reading it gets nothing. The same defect as a cast to one, and far more common in a project that caches the reference.",
+  "cast-to-server-only-class":
+    "A GameMode exists only on the server. On every client the cast fails silently and every node after it never runs. Single-player testing cannot see it.",
+  "server-writes-unreplicated":
+    "Reads as 'it works for the host'. Nobody can reproduce it alone, which is why it survives to a showcase.",
+  "server-writes-unreplicated-handle":
+    "Usually fine: if the referenced Actor replicates itself, clients already see it and the variable is just the server's handle. Worth one look, not a rewrite.",
+  "name-has-stray-whitespace":
+    "A name that differs from its own trim. The editor renders it identically, so the only symptom is that everything matching by name silently misses.",
+  "anim-duplicate-transition":
+    "Two transitions from one state to the same state on the same rule. Only the first can fire, so the case the second was added for is handled nowhere.",
+  "anim-state-no-exit":
+    "The character enters the pose and stays in it. Reads as 'he freezes after the dodge', and nothing warns.",
+  "row-name-not-in-table":
+    "The lookup returns an empty struct and the Row Found pin is usually unwired, so nothing reports it.",
+  "timer-target-missing":
+    "The timer runs at its interval forever and calls nothing. Nothing warns, at compile time or at runtime.",
+  "niagara-system-empty":
+    "The spawn call succeeds and nothing appears. Reads as 'the effect doesn't play', with no error to search for.",
+  "niagara-all-emitters-disabled":
+    "Same as an empty system in practice: it spawns, and renders nothing.",
+  "anim-transition-never-fires":
+    "An empty rule graph draws like a working transition. The destination state is simply unreachable through it.",
+  "unhandled-cast-failure":
+    "A failed cast does not error. The chain simply stops, so the feature does not happen and there is nothing to search for.",
+  "level-sweep-every-frame": "Walks every actor in the level, 60+ times a second.",
+  "spawn-every-frame": "The most expensive thing a Blueprint can do, repeated per frame.",
+  "state-outlives-owner": "Resets on death or respawn, so it looks correct until somebody dies.",
+  "parent-event-not-called":
+    "Adding an event to a child Blueprint silently replaces the parent's. Everything the parent set up is missing, on every machine, while the child's own logic still works - so the Blueprint looks correct.",
+  "server-event-touches-widget":
+    "A widget exists only on the machine that created it, so this updates the host's screen and nobody else's. The cast succeeds and nothing errors.",
+  "repnotify-does-nothing":
+    "Marking a variable RepNotify says the clients must react when it arrives. An empty one is usually the missing half of a feature - the half that works for everybody who is not hosting.",
+  "session-lan-mismatch":
+    "A LAN session is invisible to an online search and the reverse. Hosting succeeds, searching succeeds, the list is empty, and nothing anywhere reports an error.",
+  "session-host-paths-disagree":
+    "Menus grow more than one host button. Whichever one was pressed decides whether anybody can see the lobby, so the same build works and then does not.",
+  "replicated-vars-on-non-replicating-actor":
+    "Ticking Replicated on a variable does nothing unless the Actor replicates. The editor allows both independently and warns about neither, so the Blueprint reads as networked and is not - every value stays on whichever machine changed it.",
+  "gamemode-has-no-pawn":
+    "DefaultPawnClass decides what every joining player possesses. Left at the engine default it is ADefaultPawn - a grey flying sphere with no mesh and no game logic - and nothing warns, because a GameMode with an engine default is a valid GameMode.",
+  "cast-every-frame": "Not free, and the answer does not change.",
+  "branch-decides-nothing": "Both arms of a Branch reach the same node, so the condition is computed and thrown away. Whatever the guard was protecting runs either way.",
+  "tick-heavy": "Runs every frame whether or not anything changed.",
+};
+
+export interface AuditFinding {
+  /**
+   * The variable this finding is about, when it is about one.
+   *
+   * Carried through from the check that produced it so two checks seeing the same defect can be
+   * recognised as one. It existed on the producers and was dropped on the way in, which is why the
+   * same RepNotify was reported twice.
+   */
+  variable?: string;
+  blueprint: string;
+  path: string;
+  graph: string;
+  check: string;
+  severity: string;
+  message: string;
+  fix: string;
+  cost: number;
+  /**
+   * Evidence, kept apart from the conclusion.
+   *
+   * Some checks fire identically on a certain bug and on a deliberate choice - the same shape of
+   * override is a real defect in one Blueprint and the author's intent in the next. This carries
+   * what the assets actually show so the reader can tell which, instead of being handed a verdict.
+   */
+  observed?: string;
+}
+
+export interface AuditGroup {
+  check: string;
+  count: number;
+  cost: number;
+  why?: string;
+  examples: Array<{ blueprint: string; graph: string; message: string; observed?: string }>;
+  /** Absent when detail was elided for budget. Absent does NOT mean "no fix is known". */
+  fix?: string;
+  /** True when the explanation, examples and fix were dropped to keep the reply small. */
+  detailElided?: boolean;
+}
+
+export interface AuditResult {
+  project?: string;
+  blueprintsScanned: number;
+  blueprintsWithFindings: number;
+  findingCount: number;
+  /** Ranked by cost, most expensive first. */
+  groups: AuditGroup[];
+  /** The Blueprints worth opening first, by accumulated cost. */
+  worstBlueprints: Array<{
+    name: string;
+    cost: number;
+    findings: number;
+    /**
+     * How many assets reference this Blueprint. Reported, never re-ranked: zero is strong
+     * evidence and not proof, because a class chosen in World Settings or by name at runtime
+     * can be real and show nothing here.
+     */
+    referencedBy?: number;
+  }>;
+  unreadable: Array<{ name: string; error: string }>;
+  /**
+   * Whole checks that could not run, and why.
+   *
+   * Three of these were skipped in silence: animation, Niagara, and the broken-name sweep each sit
+   * behind a bridge command an older plugin may not have, and each `catch` said so in a code comment
+   * and nothing else. The reply then read as a complete audit that happened to find no animation
+   * bugs - which is the same sentence as "I could not look at animation", and this project has spent
+   * a lot of effort separating those two everywhere else.
+   *
+   * It matters most exactly when it is most likely: the plugin inside a running editor is routinely
+   * older than the server, which is what the doctor freshness check reports.
+   *
+   * The field is `name` and not `check` on purpose. `check: "..."` is the pattern the FINDING_COST
+   * guard scans for, and it demanded a price for "animation" - which is right of it, since an
+   * unpriced finding name silently scores 1 and sinks. These are skipped CHECKS, not findings, so
+   * they take a different word rather than weakening the guard.
+   */
+  checksSkipped: Array<{ name: string; why: string }>;
+  /** Present only when something was skipped, so a complete audit pays nothing for it. */
+  checksSkippedNote?: string;
+  /**
+   * Data Table rows whose asset reference is empty while sibling rows fill it in.
+   *
+   * Kept out of `groups` on purpose: those are per-Blueprint findings ranked by cost, and a table
+   * row is neither a Blueprint nor a graph. Filing it under one would be a lie of the same kind the
+   * review already refuses to tell.
+   */
+  /** How much of the Data Table half actually ran, so no findings can be told from not looking. */
+  dataTablesScanned: number;
+  dataTableRowsScanned: number;
+  dataTableNulls: Array<{
+    table: string;
+    rowName: string;
+    field: string;
+    rowStruct?: string;
+    /** How many assets reference this table. A finding in a table nothing reads is a different fact. */
+    referencedBy?: number;
+  }>;
+  /**
+   * Rows sharing a CLASS reference in a column where almost every other row has its own.
+   *
+   * Two rows pointing at one Blueprint means they do the same thing while claiming to be different
+   * upgrades, weapons or abilities. Found on a real project and missed by every other check, because
+   * the field is filled in and the value is a valid asset - nothing is null, nothing is broken, and
+   * one row simply does someone else's job.
+   */
+  dataTableDuplicateClasses: Array<{
+    table: string;
+    field: string;
+    value: string;
+    rows: string[];
+    rowStruct?: string;
+    referencedBy?: number;
+  }>;
+  truncated: boolean;
+  /**
+   * How many Blueprints the project has, against how many were looked at.
+   *
+   * `blueprintsScanned` on its own has no denominator, and this audit stops at 150 by default. On a
+   * 339-Blueprint project that reads as "scanned 150" with no hint that 189 were never opened - and
+   * `truncated: true` beside it is ambiguous, because the same reply truncates finding DETAIL as
+   * well and explains that at length in `detailNote`. A reader has every reason to attach the flag
+   * to the thing the note describes.
+   *
+   * The distinction is the same one blueprintsSearched and blueprintsScanned exist for elsewhere: a
+   * count of what was found means nothing without a count of what was examined.
+   */
+  blueprintsInProject: number;
+  /** Says which truncation happened and what to do, when the scan itself was cut short. */
+  scopeNote?: string;
+  nextAction: string;
+}
+
+/**
+ * A missing bridge command is one skipped check, not N unreadable assets.
+ *
+ * Both the animation and Niagara sweeps read one asset at a time inside a per-asset try, so a plugin
+ * without the command produced sixty-two identical "unreadable: unknown_cmd" rows - which reads as
+ * sixty-two corrupt assets rather than one command this editor does not have. It also kept trying,
+ * sixty-two times, for an answer that could not change.
+ *
+ * Returns true when the loop should stop and the check should be recorded as skipped.
+ */
+function isMissingCommand(err: unknown): boolean {
+  return /unknown_cmd/.test(err instanceof Error ? err.message : String(err));
+}
+
+/** One short line for why a check could not run, from whatever the bridge threw. */
+function reasonFor(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return /unknown_cmd/.test(text)
+    ? `${text.slice(0, 80)} - the plugin in this editor is older than this server. Run unreal_doctor.`
+    : text.slice(0, 120);
+}
+
+export interface AuditOptions {
+  pathPrefix?: string;
+  /** How many Blueprints to look at. Bounded on purpose; a whole project can be thousands. */
+  limit?: number;
+  /** Examples reported per finding kind. */
+  examplesPerGroup?: number;
+  /**
+   * How many groups come back with their explanation and fix attached.
+   *
+   * Beyond this, groups return name, count and cost only. Nobody works on the thirteenth most
+   * expensive category today, and carrying its prose costs the caller tokens on every call - on the
+   * real project the explanations were most of the reply. Detailed at the top and terse below is
+   * what a plan looks like; uniform detail is what a list looks like.
+   */
+  detailedGroups?: number;
+  /**
+   * One check name, returned in full instead of raising detail for everything above it.
+   *
+   * The natural next move after an audit is "tell me more about that one", and the only lever was
+   * `detailedGroups`, which is positional: to see the 13th kind you asked for the first thirteen.
+   * Measured on the real project, that is 2,350 tokens to 4,303 - nearly double, and twelve of the
+   * thirteen groups it returns in full are ones you did not ask for.
+   */
+  check?: string;
+}
+
+export async function auditProject(bridge: BridgeLike, options: AuditOptions = {}): Promise<AuditResult> {
+  const pathPrefix = options.pathPrefix ?? "/Game";
+  // 500, not 150, and the reason is that the old default was buying almost nothing.
+  //
+  // Measured on a 339-Blueprint project: at 150 the audit reports 468 findings; at full coverage it
+  // reports 859 across 259 Blueprints instead of 112. The default was hiding 46% of what the project
+  // actually contains - and the reply grew by 84 tokens, because this reply is grouped and its
+  // detail is elided by `detailedGroups`, so its size is governed by how much is SAID per finding
+  // rather than by how many there are. The cap was protecting a budget that was not under threat.
+  //
+  // What it does cost is time: 12s at 150, 25s at 339. 500 keeps the worst case near 40 seconds,
+  // which is the reason this is not simply the 2000 maximum - audit_project is a composite that
+  // issues many bridge calls, and the binding constraint is the MCP client's own timeout, which
+  // this server does not control. A partial audit that returns beats a complete one that is killed.
+  //
+  // Above 500 the scan still truncates, and now says so with a denominator and what to pass.
+  const limit = Math.max(1, Math.min(options.limit ?? 500, 2000));
+  const examplesPerGroup = Math.max(1, Math.min(options.examplesPerGroup ?? 3, 10));
+  const detailedGroups = Math.max(1, Math.min(options.detailedGroups ?? 4, 30));
+  const wantedCheck = (options.check ?? "").trim().toLowerCase();
+
+  const listed = await bridge.send<{
+    // parentClass rides along for free and is what lets the liveness pass skip interfaces, whose
+    // graphs are declarations rather than code and would otherwise all look abandoned.
+    blueprints?: Array<{ name: string; path: string; parentClass?: string }>;
+  }>("list_blueprints", {
+    pathPrefix,
+  });
+  const all = listed.blueprints ?? [];
+  const blueprints = all.slice(0, limit);
+
+  // Which classes are server-only, asked once per distinct name and cached. Answering by name would
+  // be a guess: a project's GameModes are called things like AVSBaseGameMode and GM_Gameplay,
+  // neither of which contains "GameModeBase".
+  const pathOfBlueprint = new Map(all.map((bp) => [bp.name, bp.path]));
+  const serverOnly = new Map<string, boolean>();
+  /** Classes the engine could not resolve, so the checks that depend on them could not run. */
+  /** Variable type heads whose `subType` names a CLASS, so describe_class can answer about it. */
+const CLASS_VALUED_TYPES = new Set(["object", "class", "softobject", "softclass", "interface"]);
+
+/** Replicated variable names per Blueprint, kept from the read that already happens. */
+const replicatedByBlueprint = new Map<string, string[]>();
+const unresolvedClasses = new Set<string>();
+  const widgetClasses = new Map<string, boolean>();
+  const learn = async (className: string) => {
+    if (serverOnly.has(className) && widgetClasses.has(className)) return;
+    try {
+      const described = await bridge.send<{ serverOnly?: boolean; ancestry?: string[] }>("describe_class", {
+        className: pathOfBlueprint.get(className) ?? className,
+      });
+      serverOnly.set(className, described.serverOnly === true);
+      // Widget classes are called all sorts of things - W_, WB_, WBP_, or nothing at all - so this
+      // is answered from the ancestry and never from the name.
+      widgetClasses.set(className, (described.ancestry ?? []).some((a) => /UserWidget/i.test(a)));
+    } catch {
+      // A class the engine could not resolve is NOT a class that turned out to be fine.
+      //
+      // This used to record `false` for both and say nothing, so "checked, not server-only" and
+      // "could not look" produced identical output. cast-to-server-only-class is the most expensive
+      // check in the table; a class that fails to resolve can never trigger it, and until now
+      // nothing anywhere reported that it had not been checked.
+      //
+      // The values still default to false because the alternative - reporting a finding about a
+      // class nothing is known about - would be a guess dressed as a result. What changes is that
+      // the audit now says so, once, at the end.
+      unresolvedClasses.add(className);
+      serverOnly.set(className, false);
+      widgetClasses.set(className, false);
+    }
+  };
+  const isServerOnlyClass = (className: string) => serverOnly.get(className) === true;
+
+  const findings: AuditFinding[] = [];
+  /** Every graph of every Blueprint, kept so liveness costs no extra reads. */
+  const allGraphs: LivenessGraph[] = [];
+  const unreadable: Array<{ name: string; error: string }> = [];
+  const checksSkipped: Array<{ name: string; why: string }> = [];
+  const sessionGraphs: SessionGraph[] = [];
+  const units: AuthorityUnit[] = [];
+  // Kept per Blueprint so a child can be compared against its parent afterwards: the parent has not
+  // necessarily been read at the moment the child is.
+  const eventGraphs = new Map<
+    string,
+    { parentClass: string; chains: Array<{ entry: string; steps: string[]; nodeIds: string[] }>; titles: string[] }
+  >();
+  const uiCandidates: Array<{
+    blueprint: string;
+    path: string;
+    graphName: string;
+    unitKey: string;
+    chain: { entryId: string; entry: string; nodeIds: string[] };
+    nodesById: Map<string, { id: string; type: string; title?: string }>;
+  }> = [];
+
+  for (const bp of blueprints) {
+    try {
+      const review = await reviewBlueprint(bridge, bp.path, undefined, { includeGraphNodes: true });
+
+      for (const graph of review.graphs ?? []) {
+        for (const finding of graph.findings ?? []) {
+          findings.push({
+            blueprint: bp.name,
+            path: bp.path,
+            graph: graph.graphName,
+            check: finding.check,
+            severity: finding.severity,
+            message: finding.message,
+            fix: finding.fix,
+            ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+          });
+        }
+      }
+
+      // Findings about the Blueprint rather than about one of its graphs: where its state lives,
+      // and whether what the server writes ever reaches a client.
+      //
+      // These were computed for every Blueprint here and thrown away, because this loop only read
+      // `graphs`. So review_blueprint on ONE asset reported replication bugs and audit_project
+      // across all of them reported none - and replication is the most expensive class of bug in
+      // the set. A whole-project audit that silently omits a whole family is worse than one that
+      // omits nothing, because the silence reads as "clean".
+
+      // Event dispatcher signatures are not graphs anyone calls.
+      //
+      // Unreal exposes a `mcdelegate` variable's signature in the graph list, with a function entry
+      // and nothing wired to it. Nothing calls it by name - it is BOUND to - so every dispatcher in
+      // the project counted as an abandoned function. On GS_Gameplay that is 7 of 26 "graphs", and
+      // the section reported 15 of 26 as possibly replaced; on BP_Player it is 12.
+      //
+      // Same reasoning as the interface and animation exclusions already here: a graph the engine
+      // reaches by a route other than a call node is not evidence of anything.
+      // Two sources, and the better one is preferred. list_blueprint_graphs marks these as
+      // kind:"delegate" from the engine's own DelegateSignatureGraphs array, which is exact. Matching
+      // graph names against delegate-typed variables is inference about the same fact - accurate in
+      // practice, since a dispatcher's signature graph carries its name, but inference.
+      //
+      // The inference stays because the plugin inside a running editor is routinely older than this
+      // server, and the variable list is already in hand here. When the mark is present it wins.
+      const markedDelegates = new Set(
+        ((review.graphKinds ?? []) as Array<{ graphName?: string; kind?: string }>)
+          .filter((g) => g.kind === "delegate")
+          .map((g) => String(g.graphName))
+      );
+      const dispatcherNames =
+        markedDelegates.size > 0
+          ? markedDelegates
+          : new Set(
+              (review.variables ?? [])
+                .filter((v) => /delegate/i.test(String((v as { type?: string }).type ?? "")))
+                .map((v) => v.name)
+            );
+      for (const graph of review.graphNodes ?? []) {
+        if (dispatcherNames.has(graph.graphName)) continue;
+        allGraphs.push({
+          blueprint: bp.name,
+          graphName: graph.graphName,
+          nodes: (graph.nodes ?? []) as Array<{ title?: string; type?: string }>,
+          parentClass: bp.parentClass,
+        });
+      }
+
+      await learn(bp.name);
+      const ownerIsServerOnly = isServerOnlyClass(bp.name);
+
+      // The class each object variable holds, so a Get of a GameMode reference is caught the same
+      // way a cast to one is. The project reaches its GameMode through a cached variable far more
+      // often than through a cast, and only the cast was ever checked.
+      // Kept here rather than re-read later: the replication-flag check needs these and this is
+      // the one place they are already loaded.
+      const replicatedHere = (review.variables ?? [])
+        .filter((v) => v.replicated === true || String(v.repNotify ?? "").length > 0)
+        .map((v) => v.name);
+      if (replicatedHere.length > 0) replicatedByBlueprint.set(bp.name, replicatedHere);
+
+      const variableClasses = new Map<string, string>();
+      for (const variable of review.variables ?? []) {
+        const held = variable.subType;
+        if (!held) continue;
+        variableClasses.set(variable.name, held);
+        // Only ASK about things that are classes.
+        //
+        // A struct or enum variable carries its own name in `subType` too, and describe_class
+        // cannot resolve either - so every one of them was landing in "class name(s) could not be
+        // resolved". Measured on this project: 52 unresolved names, of which roughly 38 are structs
+        // and enums that no class check could ever apply to - Vector, Rotator, Transform,
+        // LinearColor, SlateBrush, TimerHandle, GameplayTag, every S_ and ST_ struct, every E_ enum.
+        //
+        // That inflated a real caveat into a scarier one. The note exists so a reader knows
+        // cast-to-server-only-class could not run for a name; padding it with Vector teaches them to
+        // discount the whole note, which costs exactly the fourteen names that genuinely matter.
+        //
+        // `type` is the raw head the bridge sends - Object, Class, Struct, Byte - before
+        // asTypeDescriptor folds it into "object:Thing". Interface and the soft forms are included
+        // because they are class references too, and a name this does not recognise is left alone
+        // rather than guessed at.
+        const heldKind = String((variable as { type?: unknown }).type ?? "").toLowerCase();
+        if (!CLASS_VALUED_TYPES.has(heldKind)) continue;
+        await learn(held);
+      }
+
+      for (const graph of review.graphNodes ?? []) {
+        const nodes = (graph.nodes ?? []) as Array<{ title?: string }>;
+        for (const node of nodes) {
+          const castTarget = classNameFromCastTitle(String(node.title ?? ""));
+          if (castTarget) await learn(castTarget);
+        }
+        for (const finding of findServerOnlyCasts(
+          graph.nodes as never,
+          isServerOnlyClass,
+          ownerIsServerOnly,
+          variableClasses
+        )) {
+          findings.push({
+            blueprint: bp.name,
+            path: bp.path,
+            graph: graph.graphName,
+            check: finding.check,
+            severity: finding.severity,
+            message: finding.message,
+            fix: finding.fix,
+            ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+          });
+        }
+      }
+
+      for (const graph of review.graphNodes ?? []) {
+        const nodes = (graph.nodes ?? []) as SessionGraph["nodes"];
+        sessionGraphs.push({
+          blueprint: bp.name,
+          path: bp.path,
+          graphName: graph.graphName,
+          nodes,
+          // Abandoned menu code is the normal state of a shipping project's lobby, and reporting
+          // flags on nodes that never run would bury the one that does.
+          liveNodeIds: new Set(explainGraph({ nodes } as never).chains.flatMap((c) => c.nodeIds)),
+        });
+      }
+
+      // Both of these need things the per-graph checks do not have: the replication mode of an
+      // event, and whether a RepNotify function has a body. Asked for lazily, and only when a graph
+      // has already shown it might matter.
+      const variables = (review.variables ?? []) as Array<{ name: string; repNotify?: string }>;
+      // "Does this function do anything" is a reachability question, not a node count.
+      //
+      // This used to answer it as "is every node unconnected", which is closer than counting nodes
+      // and still not the question: a wired pair of nodes that the function's ENTRY never reaches
+      // does nothing at all, and was read as a body. Same mistake, in its third place today - the
+      // parent-call finding scanned node titles, and unreal_call_parent_function's own "is it
+      // already there" check asked whether the node existed rather than whether anything ran it.
+      //
+      // Biased toward silence, deliberately: a graph whose entry cannot be identified is reported as
+      // "not readable" rather than as empty, because a wrong warning about a function that does work
+      // costs more than a missed one about a function that does not.
+      const graphIsEmpty = (functionName: string): boolean | undefined => {
+        const graph = (review.graphNodes ?? []).find((g) => g.graphName === functionName);
+        if (!graph) return undefined;
+        const nodes = (graph.nodes ?? []) as FlowNode[];
+        if (nodes.length === 0) return true;
+        const byId = new Map(nodes.map((n) => [n.id, n]));
+        const entry = nodes.find((n) => /FunctionEntry|K2Node_Event/.test(n.type ?? ""));
+        if (!entry) return undefined;
+        return execTargets(entry, byId).length === 0;
+      };
+      for (const finding of findEmptyRepNotifies(variables, graphIsEmpty)) {
+        findings.push({
+          blueprint: bp.name,
+          path: bp.path,
+          graph: "(whole asset)",
+          check: finding.check,
+          severity: finding.severity,
+          message: finding.message,
+          fix: finding.fix,
+          ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+        });
+      }
+
+      const eventGraph = (review.graphNodes ?? []).find((g) => /^EventGraph$/i.test(g.graphName));
+      if (eventGraph) {
+        const evNodes = (eventGraph.nodes ?? []) as Array<{ id: string; title?: string }>;
+        eventGraphs.set(bp.name, {
+          parentClass: (review.parentClass ?? "").replace(/_C$/, ""),
+          chains: explainGraph({ nodes: evNodes } as never).chains.map((c) => ({
+            entry: c.entry,
+            steps: c.steps,
+            nodeIds: c.nodeIds,
+          })),
+          titles: evNodes.map((n) => String(n.title ?? "")),
+        });
+      }
+
+      // Collected here and judged after the loop: whether a chain runs on the server can depend on
+      // a Server RPC in a different Blueprint, which has not necessarily been read yet.
+      for (const graph of review.graphNodes ?? []) {
+        const nodes = (graph.nodes ?? []) as SessionGraph["nodes"];
+        const explained = explainGraph({ nodes } as never);
+        for (const chain of explained.chains) {
+          // A function graph is one unit named after the graph; an event graph holds one unit per
+          // event. Callers write the bare name, so the editor's "Event " prefix comes off.
+          const isEventGraph = /^EventGraph$/i.test(graph.graphName);
+          const name = isEventGraph ? chain.entry.replace(/^Event\s+/i, "").trim() : graph.graphName;
+          const chainNodes = nodes.filter((n) => chain.nodeIds.includes(n.id) || n.id === chain.entryId);
+          const entryNode = nodes.find((n) => n.id === chain.entryId);
+          units.push({
+            key: `${bp.name}::${name}`,
+            blueprint: bp.name,
+            name,
+            entryId: chain.entryId,
+            entryType: entryNode?.type,
+            nodes: chainNodes as never,
+          });
+          uiCandidates.push({
+            blueprint: bp.name,
+            path: bp.path,
+            graphName: graph.graphName,
+            unitKey: `${bp.name}::${name}`,
+            chain: { entryId: chain.entryId, entry: chain.entry, nodeIds: chain.nodeIds },
+            nodesById: new Map(nodes.map((n) => [n.id, n])) as never,
+          });
+        }
+      }
+
+      // Blueprint-level findings: replication, and whether what the server writes reaches a client.
+      //
+      // review computes these per Blueprint and this loop is the only thing that keeps them. Once it
+      // was not: this exact loop existed TWICE, a few hundred lines apart, one filing under
+      // `graph: "variables"` and one under `graph: "(whole asset)"`, both walking `review.blueprint`.
+      // Every finding in the most expensive class in the set was therefore counted twice - the
+      // per-check totals, the per-Blueprint costs, and the worstBlueprints ranking built on them.
+      //
+      // It showed up as a repeat in an examples list. BP_Player reports four of these; the audit
+      // said eight, in two labelled pairs, and the label was the only thing that differed.
+      for (const finding of review.blueprint ?? []) {
+        findings.push({
+          blueprint: bp.name,
+          path: bp.path,
+          // Not a graph, and saying so beats filing it under an arbitrary one.
+          graph: "(whole asset)",
+          check: finding.check,
+          severity: finding.severity,
+          message: finding.message,
+          ...((finding as { observed?: string }).observed ? { observed: (finding as { observed?: string }).observed } : {}),
+          fix: finding.fix,
+          ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+        });
+      }
+    } catch (err) {
+      // One unreadable Blueprint must not cost the caller the audit.
+      unreadable.push({ name: bp.name, error: err instanceof Error ? err.message.slice(0, 140) : String(err) });
+    }
+  }
+
+  // Animation. list_blueprints returns Blueprint assets, and an AnimBlueprint is a different class,
+  // so until now this audit could not see a single state machine in the project - "find every bug"
+  // stopped at the door of the half where "the character is not animating" is usually answered.
+  try {
+    const animAssets = await bridge.send<{ assets?: Array<{ name: string; path: string }> }>("list_assets", {
+      className: "AnimBlueprint",
+      maxResults: 200,
+    });
+    for (const asset of animAssets.assets ?? []) {
+      try {
+        const anim = await bridge.send<Record<string, unknown>>("read_anim_blueprint", { path: asset.path });
+        for (const finding of findAnimStateMachineFaults(anim, asset.name)) {
+          findings.push({
+            blueprint: asset.name,
+            path: asset.path,
+            graph: "AnimGraph",
+            check: finding.check,
+            severity: finding.severity,
+            message: finding.message,
+            ...(finding.observed ? { observed: finding.observed } : {}),
+            fix: finding.fix,
+            ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+          });
+        }
+      } catch (err) {
+        if (isMissingCommand(err)) {
+          checksSkipped.push({ name: "animation", why: reasonFor(err) });
+          break;
+        }
+        unreadable.push({
+          name: asset.name,
+          error: err instanceof Error ? err.message.slice(0, 140) : String(err),
+        });
+      }
+    }
+  } catch (err) {
+    // An older bridge has no read_anim_blueprint. The rest of the audit is still worth returning,
+    // and a hard failure here would make upgrading the server a prerequisite for auditing at all.
+    // Recorded, though: "no animation findings" and "animation was never checked" are different.
+    checksSkipped.push({ name: "animation", why: reasonFor(err) });
+  }
+
+  // Names typed as text, checked against whether the thing they name exists. Deliberately no MCP
+  // tool of its own: it belongs in "find every bug", and a separate tool would cost every session
+  // ~330 tokens of definition for a check nobody calls directly.
+  try {
+    const broken = await bridge.send<{
+      broken?: Array<{
+        blueprint: string;
+        graph: string;
+        check: string;
+        message: string;
+        fix: string;
+        nodeId?: string;
+      }>;
+      namesChecked?: number;
+      namesFromVariables?: number;
+    }>("find_broken_names", { pathPrefix });
+    for (const finding of broken.broken ?? []) {
+      findings.push({
+        blueprint: finding.blueprint,
+        path: pathOfBlueprint.get(finding.blueprint) ?? pathPrefix,
+        graph: finding.graph,
+        check: finding.check,
+        severity: "warning",
+        // The node id when the check has one, because "somewhere in this graph" is a search and
+        // "this node" is an edit.
+        message: finding.nodeId
+          ? `${finding.blueprint} ${finding.message} (node ${finding.nodeId})`
+          : `${finding.blueprint} ${finding.message}`,
+        fix: finding.fix,
+        cost: FINDING_COST[finding.check] ?? 1,
+      });
+    }
+  } catch (err) {
+    // An older bridge has no find_broken_names; the rest of the audit still stands - but skipping a
+    // whole check in silence reads as "nothing found", so it is recorded.
+    checksSkipped.push({ name: "broken-names", why: reasonFor(err) });
+  }
+
+  // Cinematics. Same reasoning again: a LevelSequence is not a Blueprint, so "find every bug" stopped
+  // at the door of the cutscenes - nine of them on the project this was built against.
+  try {
+    const cine = await bridge.send<{ assets?: Array<{ name: string; path: string }> }>("list_assets", {
+      className: "LevelSequence",
+      maxResults: 200,
+    });
+    for (const asset of cine.assets ?? []) {
+      try {
+        const sequence = await bridge.send<SequenceReadReply>("read_level_sequence", { path: asset.path });
+        for (const finding of findSequenceProblems(sequence)) {
+          findings.push({
+            blueprint: asset.name,
+            path: asset.path,
+            graph: "(sequence)",
+            check: finding.check,
+            severity: finding.severity,
+            message: finding.message,
+            fix: finding.fix,
+            ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+          });
+        }
+      } catch (err) {
+        if (isMissingCommand(err)) {
+          checksSkipped.push({ name: "cinematics", why: reasonFor(err) });
+          break;
+        }
+        unreadable.push({ name: asset.name, error: err instanceof Error ? err.message.slice(0, 140) : String(err) });
+      }
+    }
+  } catch (err) {
+    // An older bridge has no read_level_sequence; the Blueprint half of the audit still stands, and
+    // the caller is told the cinematics half did not happen rather than left to read its silence.
+    checksSkipped.push({ name: "cinematics", why: reasonFor(err) });
+  }
+
+  // VFX. Same reasoning as the animation pass: a NiagaraSystem is not a Blueprint, so list_blueprints
+  // never returned one and the audit could not see a single effect in the project.
+  try {
+    const vfx = await bridge.send<{ assets?: Array<{ name: string; path: string }> }>("list_assets", {
+      className: "NiagaraSystem",
+      maxResults: 200,
+    });
+    for (const asset of vfx.assets ?? []) {
+      try {
+        const system = await bridge.send<Record<string, unknown>>("read_niagara_system", { path: asset.path });
+        for (const finding of findNiagaraFaults(system, asset.name)) {
+          findings.push({
+            blueprint: asset.name,
+            path: asset.path,
+            graph: "(system)",
+            check: finding.check,
+            severity: finding.severity,
+            message: finding.message,
+            ...(finding.observed ? { observed: finding.observed } : {}),
+            fix: finding.fix,
+            ...((finding as { variable?: string }).variable ? { variable: (finding as { variable?: string }).variable } : {}),
+          cost: FINDING_COST[finding.check] ?? 1,
+          });
+        }
+      } catch (err) {
+        if (isMissingCommand(err)) {
+          checksSkipped.push({ name: "niagara", why: reasonFor(err) });
+          break;
+        }
+        unreadable.push({ name: asset.name, error: err instanceof Error ? err.message.slice(0, 140) : String(err) });
+      }
+    }
+  } catch (err) {
+    // An older bridge has no read_niagara_system; the rest of the audit is still worth returning,
+    // but the caller has to know the VFX half did not happen.
+    checksSkipped.push({ name: "niagara", why: reasonFor(err) });
+  }
+
+  // These findings only ever come from the event graph - the map they are built from is the event
+  // graphs - so the name is a constant rather than a guess, and one constant rather than two.
+  // Replication flag against replicated variables. Class defaults again, and only for Blueprints
+  // that actually declare a replicated variable - 19 of 339 here - so the cost is a handful of reads.
+  try {
+    const subjects: ReplicationSubject[] = [];
+    for (const [name, replicated] of replicatedByBlueprint) {
+      const path = pathOfBlueprint.get(name);
+      if (!path) continue;
+      const defaults = await bridge.send<{ replicates?: boolean }>("read_class_defaults", { path });
+      subjects.push({
+        name,
+        replicates: defaults.replicates,
+        replicatedVariables: replicated,
+        parentClass: eventGraphs.get(name)?.parentClass,
+      });
+    }
+    for (const finding of findReplicationFlagFaults(subjects)) {
+      findings.push({
+        path: pathOfBlueprint.get(finding.blueprint) ?? finding.blueprint,
+        blueprint: finding.blueprint,
+        graph: "(class defaults)",
+        check: finding.check,
+        severity: finding.severity,
+        cost: FINDING_COST[finding.check] ?? 1,
+        message: finding.message,
+        observed: finding.observed,
+        fix: finding.fix,
+      });
+    }
+  } catch (err) {
+    checksSkipped.push({ name: "replication-flag", why: reasonFor(err) });
+  }
+
+  // GameMode wiring. Read from class defaults rather than from graphs, which is why it sits apart
+  // from the per-graph passes: what a GameMode chooses is a property, not a node.
+  //
+  // Only GameMode Blueprints are read, so this costs a handful of calls on any project - five here.
+  try {
+    const modes: GameModeDefaults[] = [];
+    for (const [name, child] of eventGraphs) {
+      if (!/GameMode/i.test(child.parentClass ?? "") && !/^GM_/.test(name)) continue;
+      const path = pathOfBlueprint.get(name);
+      if (!path) continue;
+      const defaults = await bridge.send<{ properties?: Array<{ name?: string; value?: string }> }>(
+        "read_class_defaults",
+        { path }
+      );
+      const value = (key: string) =>
+        (defaults.properties ?? []).find((p) => p.name === key)?.value ?? undefined;
+      modes.push({
+        name,
+        defaultPawnClass: value("DefaultPawnClass"),
+        gameStateClass: value("GameStateClass"),
+        playerControllerClass: value("PlayerControllerClass"),
+      });
+    }
+    for (const finding of findGameModeWiringFaults(modes)) {
+      findings.push({
+        path: pathOfBlueprint.get(finding.blueprint) ?? finding.blueprint,
+        blueprint: finding.blueprint,
+        graph: "(class defaults)",
+        check: finding.check,
+        severity: finding.severity,
+        cost: FINDING_COST[finding.check] ?? 1,
+        message: finding.message,
+        observed: finding.observed,
+        fix: finding.fix,
+      });
+    }
+  } catch (err) {
+    checksSkipped.push({ name: "gamemode-wiring", why: reasonFor(err) });
+  }
+
+  const PARENT_CALL_GRAPH = "EventGraph";
+
+  // A child against its parent. Both have to have been read, which is why this waits until here.
+  //
+  // A parent that is NOT a Blueprint is skipped, and until now was skipped in silence. Measured
+  // here: 296 of 339 Blueprints inherit from a native class, so this check ran on 43 of them - 13%
+  // - and the report said nothing about the other 87%.
+  //
+  // The silence is the defect, not the skip. Comparing a child against a C++ parent would mean
+  // reading the parent's BeginPlay out of source, and firing on every child that overrides one
+  // without that evidence would be noise on hundreds of perfectly ordinary widgets: this check's
+  // own header says the signal is overriding a parent implementation that DOES work, and without
+  // the parent there is no signal, only a shape.
+  //
+  // So it reports coverage instead of inventing findings - the same answer classesNotResolved
+  // gives, for the same reason. A reader recognises their own C++ classes in the list instantly.
+  const nativeParents = new Map<string, number>();
+  for (const [, child] of eventGraphs) {
+    if (child.parentClass && !eventGraphs.has(child.parentClass)) {
+      nativeParents.set(child.parentClass, (nativeParents.get(child.parentClass) ?? 0) + 1);
+    }
+  }
+
+  for (const [name, child] of eventGraphs) {
+    const parent = eventGraphs.get(child.parentClass);
+    if (!parent) continue;
+    for (const finding of findUncalledParentEvents({
+      blueprint: name,
+      parentBlueprint: child.parentClass,
+      // The same literal the finding below is stamped with, threaded through rather than written
+      // twice, so the fix instruction and the report can never name different graphs.
+      graph: PARENT_CALL_GRAPH,
+      childChains: child.chains,
+      childNodeTitles: child.titles,
+      parentChains: parent.chains,
+    })) {
+      findings.push({
+        blueprint: name,
+        path: (blueprints.find((b) => b.name === name) ?? { path: pathPrefix }).path,
+        graph: PARENT_CALL_GRAPH,
+        check: finding.check,
+        severity: finding.severity,
+        message: finding.message,
+        ...(finding.observed ? { observed: finding.observed } : {}),
+        fix: finding.fix,
+        cost: FINDING_COST[finding.check] ?? 1,
+      });
+    }
+  }
+
+  // Authority is a project-wide question: the Server RPC that puts a chain on the server is
+  // routinely in a different Blueprint, reached through an interface message.
+  const unitIndex = new Map(units.map((u) => [u.key, u]));
+  const callers = buildCallers(units);
+  const netModeCache = new Map<string, boolean>();
+  // One lookup instead of a scan: this is asked once per unit met on every backward walk, and a
+  // linear search here turned the whole audit quadratic.
+  const ownerOfUnit = new Map<string, (typeof uiCandidates)[number]>();
+  for (const candidate of uiCandidates) if (!ownerOfUnit.has(candidate.unitKey)) ownerOfUnit.set(candidate.unitKey, candidate);
+
+  const isServerRpc = async (unit: AuthorityUnit): Promise<boolean> => {
+    // Only a custom event can be a Server RPC. Asking the editor about a function entry or an
+    // overridden engine event is a bridge call whose answer is already known.
+    if (unit.entryType && unit.entryType !== "K2Node_CustomEvent") return false;
+    const cached = netModeCache.get(unit.key);
+    if (cached !== undefined) return cached;
+    const owner = ownerOfUnit.get(unit.key);
+    let server = false;
+    if (owner) {
+      const detail = await bridge
+        .send<{ title?: string }>("read_blueprint_node_detail", {
+          path: owner.path,
+          graphName: owner.graphName,
+          nodeId: unit.entryId,
+        })
+        .catch(() => undefined);
+      server = /executes on server/i.test(detail?.title ?? "");
+    }
+    netModeCache.set(unit.key, server);
+    return server;
+  };
+
+  for (const candidate of uiCandidates) {
+    const found = await findServerSideUi([candidate.chain], candidate.nodesById as never, {
+      authorityOf: async () => resolveServerAuthority(candidate.unitKey, unitIndex, callers, isServerRpc),
+      isWidgetClass: async (className) => {
+        await learn(className);
+        return widgetClasses.get(className) === true;
+      },
+    }).catch(() => []);
+    for (const finding of found) {
+      findings.push({
+        blueprint: candidate.blueprint,
+        path: candidate.path,
+        graph: candidate.graphName,
+        check: finding.check,
+        severity: finding.severity,
+        message: finding.message,
+        fix: finding.fix,
+        cost: FINDING_COST[finding.check] ?? 1,
+      });
+    }
+  }
+
+  // Whether hosting and searching agree is a question about the PROJECT, not about any one
+  // Blueprint - which is why no per-Blueprint check could ever have found it.
+  try {
+    const session = await reviewSessions(sessionGraphs, async (path, graphName, nodeId) => {
+      const detail = await bridge.send<{ node?: { pins?: unknown[] }; pins?: unknown[] }>(
+        "read_blueprint_node_detail",
+        { path, graphName, nodeId }
+      );
+      return ((detail.node?.pins ?? detail.pins ?? []) as Array<{ name?: string; defaultValue?: unknown }>).filter(
+        (p) => p && typeof p === "object"
+      );
+    });
+    for (const finding of session.findings) {
+      findings.push({
+        blueprint: "(project)",
+        path: pathPrefix,
+        graph: "(sessions)",
+        check: finding.check,
+        severity: finding.severity,
+        message: finding.message,
+        fix: finding.fix,
+        cost: FINDING_COST[finding.check] ?? 1,
+      });
+    }
+  } catch {
+    // A project with no session nodes is the common case; never let this cost the audit.
+  }
+
+  // Grouped by kind, because "seventeen Blueprints have the same problem" is one decision to make,
+  // not seventeen.
+  // One defect, one finding, even when two checks can both see it.
+  //
+  // repnotify-does-nothing has two producers and they are not redundant: findEmptyRepNotifies asks
+  // whether the handler's entry node goes anywhere, reviewRepNotifies asks how many nodes it has and
+  // additionally tiers the result - "and nothing in this Blueprint reads or writes the variable at
+  // all" is the difference between a missing handler and dead state. Deleting either loses coverage,
+  // so both run and the richer message wins.
+  //
+  // Left alone the audit reported the same variable twice, with the per-Blueprint costs and the
+  // worstBlueprints ranking inflated to match.
+  const bySubject = new Map<string, AuditFinding>();
+  const deduped: AuditFinding[] = [];
+  // Every graph a collapsed subject appeared in, so the survivor can name the ones it replaced.
+  const graphsFor = new Map<string, Set<string>>();
+  for (const finding of findings) {
+    const subject = (finding as { variable?: string }).variable;
+    if (!subject) {
+      deduped.push(finding);
+      continue;
+    }
+    const key = `${finding.blueprint}|${finding.check}|${subject}`;
+    if (finding.graph) {
+      const set = graphsFor.get(key) ?? new Set<string>();
+      set.add(finding.graph);
+      graphsFor.set(key, set);
+    }
+    const seen = bySubject.get(key);
+    if (!seen) {
+      bySubject.set(key, finding);
+      deduped.push(finding);
+      continue;
+    }
+    if (finding.message.length > seen.message.length) {
+      deduped[deduped.indexOf(seen)] = finding;
+      bySubject.set(key, finding);
+    }
+  }
+
+  // The survivor names the other graphs, because collapsing was hiding the one that matters.
+  //
+  // One finding per variable is right: three Gets of the same null reference is one bug. Keeping
+  // only one GRAPH NAME was not. The winner is chosen by message length, which has nothing to do
+  // with where the problem shows up - so the reader is pointed at whichever site happened to
+  // produce more words.
+  //
+  // Measured against a real PIE log: GM_Gameplay in PC_Gameplay collapsed to AttemptBuyUpgrade, and
+  // the graph the game actually faults in twice a session - CreateWaveEndWBP - was the one dropped.
+  // The audit pointed at a graph that works and said nothing about the graph that does not.
+  for (const [key, graphs] of graphsFor) {
+    if (graphs.size < 2) continue;
+    const kept = bySubject.get(key);
+    if (!kept) continue;
+    const others = [...graphs].filter((g) => g !== kept.graph).sort();
+    if (others.length === 0) continue;
+    kept.message += ` The same variable is read the same way in ${others.join(", ")}.`;
+  }
+
+  findings.length = 0;
+  findings.push(...deduped);
+
+  const byCheck = new Map<string, AuditFinding[]>();
+  for (const finding of findings) {
+    const list = byCheck.get(finding.check) ?? [];
+    list.push(finding);
+    byCheck.set(finding.check, list);
+  }
+
+  const groups: AuditGroup[] = [...byCheck.entries()]
+    .map(([check, list]) => ({ check, list }))
+    .sort((a, b) => (FINDING_COST[b.check] ?? 1) - (FINDING_COST[a.check] ?? 1) || b.list.length - a.list.length)
+    .map(({ check, list }, index) => {
+      // Asking for one check means that one, wherever it ranks - and only that one. Everything else
+      // stays a count, which is what makes this cheaper than reaching the same group by rank.
+      const detailed = wantedCheck ? check.toLowerCase() === wantedCheck : index < detailedGroups;
+      return {
+        check,
+        count: list.length,
+        cost: FINDING_COST[check] ?? 1,
+        why: detailed ? WHY_IT_COSTS[check] : undefined,
+        examples: detailed
+          ? list.slice(0, wantedCheck ? Math.max(examplesPerGroup, 25) : examplesPerGroup).map((f) => ({
+              blueprint: f.blueprint,
+              graph: f.graph,
+              message: f.message,
+              // Only when a check has evidence to add. Two checks fire identically on a real bug and
+              // on a deliberate choice, and this is the field that tells them apart - dropping it
+              // here would leave the reader with the conclusion and none of the reasoning.
+              ...(f.observed ? { observed: f.observed } : {}),
+            }))
+          : [],
+        // Undefined, not "". An empty string reads as "there is no fix for this", which is the
+        // opposite of true: every one of these checks has a fix and it was dropped for budget.
+        // Saying so explicitly is what makes raising detailedGroups an obvious move rather than a
+        // guess.
+        fix: detailed ? list[0].fix : undefined,
+        ...(detailed ? {} : { detailElided: true }),
+      };
+    });
+
+  // A named check that matched nothing. Left until here so the names come from what this run
+  // actually found, rather than from a hardcoded list that could drift from it.
+  const checkNames = groups.map((g) => g.check);
+  const checkMissed = wantedCheck.length > 0 && !checkNames.some((c) => c.toLowerCase() === wantedCheck);
+
+  const costByBlueprint = new Map<string, { cost: number; findings: number }>();
+  for (const finding of findings) {
+    const entry = costByBlueprint.get(finding.blueprint) ?? { cost: 0, findings: 0 };
+    entry.cost += finding.cost;
+    entry.findings += 1;
+    costByBlueprint.set(finding.blueprint, entry);
+  }
+  const worstBlueprints: AuditResult["worstBlueprints"] = [...costByBlueprint.entries()]
+    .map(([name, entry]) => ({ name, ...entry }))
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 10);
+
+  /**
+   * How many assets reference each Blueprint in the ranking.
+   *
+   * The same fact the Data Table findings just gained, one level up, and it changes the ranking's
+   * meaning rather than decorating it. Measured on this project:
+   *
+   *   BP_Player        cost 1410, 33 findings, referenced by 49
+   *   PC_TutGameplay   cost  890, 20 findings, referenced by  0
+   *   GS_TutGameplay   cost  515, 13 findings, referenced by  0
+   *
+   * Third and eighth in "what to fix", and nothing references either - 1,405 cost and 33 findings
+   * aimed at assets no other asset mentions. A model told to start with PC_TutGameplay would spend
+   * a session there.
+   *
+   * Reported, NOT re-ranked. Zero referencers is strong evidence and not proof: a class set in a
+   * level's World Settings or picked at runtime by name can be real and show nothing here. Deciding
+   * that on the caller's behalf would be the same overreach as the "read by nobody" wording this
+   * project already had to walk back. The number is the useful part; the judgement is theirs.
+   *
+   * Only the ten already being reported are looked up.
+   */
+  for (const entry of worstBlueprints) {
+    const path = pathOfBlueprint.get(entry.name);
+    if (!path) continue;
+    try {
+      const refs = await bridge.send<{ referencedBy?: unknown[] }>("find_references", { path });
+      entry.referencedBy = (refs.referencedBy ?? []).length;
+    } catch {
+      // A lookup that fails must not cost the ranking it was decorating.
+    }
+  }
+
+  // Data Tables are swept too, because "my game has bugs, where do I look" is exactly the question
+  // this tool answers and the most expensive bug it has seen was not in a graph at all: a row's
+  // class reference cleared to None, resolved to null by the engine and silently ignored by the
+  // thing that consumed it. An audit that reads only Blueprints looks straight past it.
+  let dataTablesScanned = 0;
+  let dataTableRowsScanned = 0;
+  const dataTableNulls: AuditResult["dataTableNulls"] = [];
+  const dataTableDuplicateClasses: AuditResult["dataTableDuplicateClasses"] = [];
+  try {
+    const tables = await auditDataTables(bridge, { pathPrefix: options.pathPrefix });
+    // What the Data Table half actually looked at.
+    //
+    // Without it, a project with no Data Tables and a project with fifty clean ones produce an
+    // identical reply, and neither says which it is. Same shape as the parent-call gap above: the
+    // absence of findings is not evidence until you know what was read.
+    dataTablesScanned = tables.tablesScanned;
+    dataTableRowsScanned = tables.rowsScanned;
+    for (const n of tables.nullReferences) {
+      dataTableNulls.push({ table: n.table, rowName: n.rowName, field: n.field, rowStruct: n.rowStruct });
+    }
+    for (const d of tables.duplicateReferences ?? []) {
+      dataTableDuplicateClasses.push({
+        table: d.table,
+        field: d.field,
+        value: d.value,
+        rows: d.rows,
+        rowStruct: d.rowStruct,
+      });
+    }
+  } catch (err) {
+    /* a bridge too old to read Data Tables must not lose the Blueprint half of the audit */
+    checksSkipped.push({ name: "data-tables", why: reasonFor(err) });
+  }
+
+  // Function graphs nothing in any Blueprint appears to call.
+  //
+  // Its own section, deliberately, and NOT an annotation on individual findings. The reason is the
+  // blind spot it shares with the bridge's own reachability: neither can see a call from C++, a
+  // delegate bound at runtime, or an interface dispatch. Marking a finding "this is in a replaced
+  // system" on that evidence would be a confident wrong steer, which is worse than the silence it
+  // replaced. As a list to go and look at, it is exactly what was missing - the two most expensive
+  // mistakes this project has made were both work done on a system that had been replaced and left
+  // on the canvas, and nothing anywhere said so.
+  //
+  // Costs no extra calls: every graph was already read for the checks above.
+  const liveness = findDeadGraphs(allGraphs);
+  const possiblyReplaced =
+    liveness.dead.size === 0
+      ? undefined
+      : {
+          count: liveness.dead.size,
+          ofGraphs: liveness.considered,
+          // Grouped, not listed. Twelve graph names out of 180 is the weakest thing this could
+          // return: "GS_Gameplay.ShowCountdown" is a name, and "GS_Gameplay: 15 of 26 uncalled" is a
+          // system that was replaced. The ratio carries its own confidence too - one stray helper in
+          // forty is housekeeping, fifteen in twenty-six is not - and it costs fewer tokens than the
+          // list it replaces.
+          worst: liveness.byBlueprint.slice(0, 8).map((b) => `${b.blueprint}: ${b.dead} of ${b.of}`),
+          note:
+            "Function graphs no Blueprint node appears to call. A place to look, not a verdict. Blind " +
+            "to calls from C++, to delegates bound at runtime, to interface dispatch, and to Set Timer " +
+            "by Function Name, whose target is a string in a pin rather than a node - so a graph listed " +
+            "here may still run. unreal_trace_function_calls on one name confirms or clears it, and it " +
+            "does follow timers. Worth checking before fixing anything inside one: work on a system " +
+            "that was replaced and left on the canvas is the most expensive wasted effort there is.",
+        };
+
+  const worst = groups[0];
+
+  // Data Table findings lead, whatever the graph findings say. It is not a matter of taste: the
+  // graph findings are things that make a Blueprint worse, and these are things that are already
+  // wrong at runtime with no error to notice.
+  //
+  // Duplicates were being FOUND and never RANKED. The check exists, its comment records the exact
+  // bug it caught on this project - "Survival_MobileAgent" and "Stat_BulletSize" both pointing at
+  // BP_BulletSize, so buying the movement upgrade applies the bullet-size one - and the result sat
+  // in `dataTableDuplicateClasses` where nothing pointed at it. `nextAction` named only the nulls
+  // and `groups` never carried it, so the one field a model is told to act on could not reach it.
+  // A check whose finding cannot reach the ranking is the same defect as a tool nothing can enable.
+  //
+  // Ordered after nulls rather than before: both are silent at runtime, and an empty reference does
+  // nothing while a shared one does something plausible, so the empty one is the cheaper read.
+  /**
+   * How many assets reference each table a finding is about.
+   *
+   * A broken row in a table nothing reads and a broken row in a table six things read are different
+   * facts, and the audit could not tell them apart. Found the hard way on this project: it reported
+   * two empty UpgradeClass references and a shared one in DT_Upgrades, and that report was acted on
+   * as though DT_Upgrades were THE upgrade table. There are three - DT_Upgrades, DT_UpgradesBP and
+   * DT_UpgradesOld - with overlapping rows, and the referencing counts are 1, 6 and 3. The one the
+   * findings are in is the one almost nothing reads, and the one six assets read is clean.
+   *
+   * Only tables that already produced a finding are looked up, so a project with clean tables pays
+   * nothing for this.
+   */
+  const tablesWithFindings = [
+    ...new Set([...dataTableNulls, ...dataTableDuplicateClasses].map((d) => d.table)),
+  ];
+  const tableUsers = new Map<string, number>();
+  for (const table of tablesWithFindings) {
+    try {
+      const refs = await bridge.send<{ referencedBy?: unknown[] }>("find_references", { path: table });
+      tableUsers.set(table, (refs.referencedBy ?? []).length);
+    } catch {
+      // A reference lookup that fails must not cost the finding it was decorating.
+    }
+  }
+  for (const finding of [...dataTableNulls, ...dataTableDuplicateClasses]) {
+    const users = tableUsers.get(finding.table);
+    if (users !== undefined) (finding as { referencedBy?: number }).referencedBy = users;
+  }
+
+  const dataTableLead: string[] = [];
+  if (dataTableNulls.length > 0) {
+    dataTableLead.push(
+      `Start with ${dataTableNulls.length} empty Data Table reference(s), beginning with ` +
+        `${dataTableNulls[0].table} row "${dataTableNulls[0].rowName}" (${dataTableNulls[0].field}` +
+        `${dataTableNulls[0].referencedBy !== undefined ? `, a table ${dataTableNulls[0].referencedBy} asset(s) reference` : ""}). ` +
+        `The engine resolves an empty reference to null and whatever consumes it silently does ` +
+        `nothing - no error, no log. Fix with unreal_set_data_table_row.`
+    );
+  }
+  if (dataTableDuplicateClasses.length > 0) {
+    const d = dataTableDuplicateClasses[0];
+    dataTableLead.push(
+      `${dataTableLead.length > 0 ? "Then" : "Start with"} ${dataTableDuplicateClasses.length} Data ` +
+        `Table row(s) sharing a class reference: ${d.rows.join(" and ")} in ${d.table} both set ` +
+        `${d.field} to the same class, so they do the same thing while claiming to be different. ` +
+        `One of them is pointing at the wrong Blueprint. Fix with unreal_set_data_table_row.`
+    );
+  }
+
+  // A row struct declared in C++ is the thread from the table to the code that reads it, and the
+  // audit already knows the name. Worth one sentence: the generic "whatever consumes it silently
+  // does nothing" is true of an empty reference in the abstract and was WRONG about the real one -
+  // FShopUpgradeDef.UpgradeClass is read to count ownership by class equality, so an empty value
+  // means the upgrade never registers as owned, never reaches MaxTiers, and can be bought forever.
+  // Naming the struct lets a reader find that in one call instead of guessing at the consequence.
+  const cppStruct = [...dataTableNulls, ...dataTableDuplicateClasses]
+    .map((d) => d.rowStruct)
+    .find((rs) => typeof rs === "string" && rs.startsWith("/Script/"));
+  if (cppStruct && dataTableLead.length > 0) {
+    const shortName = cppStruct.split(".").pop() ?? cppStruct;
+    dataTableLead.push(
+      `These rows are instances of ${shortName}, which is declared in C++. ` +
+        `unreal_find_source "${shortName}" locates it and the code that reads these fields, which is ` +
+        `where the real consequence of an empty or shared value is decided.`
+    );
+  }
+
+  const nextAction =
+    dataTableLead.length > 0
+      ? dataTableLead.join(" ") + (worst ? ` Then ${worst.check} (${worst.count} found).` : "")
+      : worst
+        ? `Start with ${worst.check} (${worst.count} found). ${worst.fix}`
+        : "Nothing found worth reporting. Either the project is in good shape or the prefix matched nothing.";
+
+  return {
+    /**
+     * The conclusion first, because the reply is 13,000 characters and this was at 91% of it.
+     *
+     * nextAction is the whole point of ranking findings by likely cost - it names the single thing to
+     * do. It sat last, after every group, every caveat and every count, which is the first thing a
+     * reader loses: a client that truncates, a context that fills, or a person running `head -c 400`
+     * on the output. That last one is not hypothetical; it cost two wrong readings in the session
+     * that moved this.
+     *
+     * JSON key order is insertion order and JSON.stringify preserves it, so this costs nothing. The
+     * same content arrives in the order a summary should: what to do, then why, then the evidence.
+     */
+    nextAction,
+    ...(checkMissed
+      ? {
+          checkNotFound:
+            `No finding kind called "${options.check}". This run found: ${checkNames.join(", ")}. ` +
+            `Every group below is counted only, because the one you named is not among them.`,
+        }
+      : {}),
+    ...(nativeParents.size > 0
+      ? {
+          parentCallNotChecked:
+            `parent-event-not-called ran on ${eventGraphs.size - [...nativeParents.values()].reduce((a, b) => a + b, 0)} ` +
+            `of ${eventGraphs.size} Blueprints; the rest inherit from a native class, which this cannot read. ` +
+            `Most-used: ` +
+            [...nativeParents.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 6)
+              .map(([cls, n]) => `${cls} (${n})`)
+              .join(", ") +
+            `. Overriding an engine parent is usually fine; one of your own C++ classes is worth a ` +
+            `look with unreal_find_source.`,
+        }
+      : {}),
+    ...(worstBlueprints.some((w) => w.referencedBy === 0)
+      ? {
+          rankedButUnreferenced:
+            `Nothing references ${worstBlueprints
+              .filter((w) => w.referencedBy === 0)
+              .map((w) => `${w.name} (cost ${w.cost}, ${w.findings} finding(s))`)
+              .join(", ")}. ` +
+            `A place to look last, not a verdict: a class named in a level's World Settings or ` +
+            `chosen at runtime is real and shows nothing here. Confirm with unreal_find_references ` +
+            `before deleting anything.`,
+        }
+      : {}),
+    ...(possiblyReplaced ? { possiblyReplaced } : {}),
+    // First, before the counts, because it changes how every number below should be read.
+    checksSkipped,
+    ...(checksSkipped.length > 0
+      ? {
+          checksSkippedNote:
+            `${checksSkipped.length} check(s) could not run, so this is not a complete audit: ` +
+            `${checksSkipped.map((c) => c.name).join(", ")}. "No findings" from a check that never ran ` +
+            `looks exactly like a clean result.`,
+        }
+      : {}),
+    // Partial blindness rather than a skipped check, but the same principle: a check that could not
+    // look must not read as a check that found nothing. These are the classes the engine refused to
+    // resolve, so every check that asks what they inherit from was answered "no" by default.
+    ...(unresolvedClasses.size > 0
+      ? {
+          classesNotResolved: [...unresolvedClasses].sort(),
+          // The names live in `classesNotResolved` beside this and are not repeated here.
+          //
+          // They were in both: 12 names, 74 tokens as an array and 70 more spelled out inside this
+          // sentence. Unlike nextAction restating a finding - which is kept, because the weaker
+          // profiles rely on the whole answer being in one place - these two fields sit in the same
+          // object and a reader has both or neither. There is no reading in which the repetition
+          // buys anything.
+          classesNotResolvedNote:
+            `${unresolvedClasses.size} class name(s) could not be resolved, so the checks that ask ` +
+            `what a class inherits from - cast-to-server-only-class above all - could not run for ` +
+            `them; they are listed in classesNotResolved. They are absent from the findings because ` +
+            `nothing is known about them, not because they are clean.`,
+        }
+      : {}),
+    blueprintsScanned: blueprints.length,
+    blueprintsInProject: all.length,
+    ...(all.length > blueprints.length
+      ? {
+          scopeNote:
+            `Scanned ${blueprints.length} of ${all.length} Blueprints - the first ${blueprints.length} the ` +
+            `project lists, not the most important ones. The other ${all.length - blueprints.length} were not ` +
+            `opened, so any finding in them is absent rather than absent-because-clean. Raise \`limit\` ` +
+            `(up to 2000) to cover them, or pass \`pathPrefix\` to audit one area properly. This is a ` +
+            `different truncation from the one \`detailNote\` describes, which is about how much is said ` +
+            `per finding.`,
+        }
+      : {}),
+    blueprintsWithFindings: costByBlueprint.size,
+    findingCount: findings.length,
+    groups,
+    worstBlueprints,
+    unreadable,
+    dataTablesScanned,
+    dataTableRowsScanned,
+    dataTableNulls,
+    dataTableDuplicateClasses,
+    truncated: all.length > blueprints.length,
+  };
+}
