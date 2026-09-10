@@ -3,6 +3,20 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {createConfigStore,protect}=require('./tutor-config.cjs');
+test('encrypted directory EXDEV saves and updates without losing previous configuration',async()=>{
+  const folder=path.join(__dirname,'test-results','efs-fixture');await fs.mkdir(folder,{recursive:true});
+  const io={...fs,rename:async()=>{throw Object.assign(Error('fixture'),{code:'EXDEV'});}};
+  const store=createConfigStore({directory:folder,io});
+  await store.write({baseUrl:'https://example.com',model:'first',apiMode:'responses',apiKey:''});
+  await store.write({baseUrl:'https://example.com',model:'second',apiMode:'responses',apiKey:''});
+  assert.equal((await store.read()).model,'second');
+  const failing={...io,copyFile:async(from,to,...args)=>{
+    if(from.endsWith('.tmp')){await fs.writeFile(to,'partial');throw Object.assign(Error('fixture'),{code:'EACCES'});}
+    return fs.copyFile(from,to,...args);
+  }};
+  await assert.rejects(()=>createConfigStore({directory:folder,io:failing}).write({model:'lost',apiKey:''}));
+  assert.equal((await store.read()).model,'second');
+});
 test('Windows DPAPI protects persisted test credential and can restore/update/remove it',{skip:process.platform!=='win32'},async()=>{
   const folder=path.join(__dirname,'test-results','config-fixture');await fs.mkdir(folder,{recursive:true});
   const names=['BLASTER_TUTOR_API_KEY','BLASTER_TUTOR_BASE_URL','BLASTER_TUTOR_MODEL'];const previous=Object.fromEntries(names.map(n=>[n,process.env[n]]));
