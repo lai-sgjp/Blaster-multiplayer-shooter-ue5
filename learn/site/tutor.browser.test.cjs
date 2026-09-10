@@ -7,7 +7,10 @@ const fakeKey=['test','not-a-real-secret','temporary'].join('-');
 const grade={reply:'共犯，这次抓住了服务器裁决的重点。<script>window.pwned=true</script>',score:82,strengths:['区分了数据与 UI'],gaps:['补充 ServerFire 的 Owner 校验'],nextStep:'追踪服务器扣弹的位置。',suggestion:{concept:true,source:true,interview:false,review:true}};
 (async()=>{
   let cfg={baseUrl:'https://api.example.test/v1',model:'',apiMode:'chat',apiKey:''},lastMessages;
-  const store={read:async()=>({...cfg}),write:async c=>{cfg={...c};}};
+  const store=process.env.BLASTER_TUTOR_TEST_EFS==='1'
+    ? require('./tutor-config.cjs').createConfigStore({directory:path.join(process.env.LOCALAPPDATA,'BlasterLab','assistant','browser-fixture')})
+    : {read:async()=>({...cfg}),write:async c=>{cfg={...c};}};
+  if(process.env.BLASTER_TUTOR_TEST_EFS==='1')await store.write(cfg);
   const server=createTutorServer({store,callModel:async(c,m)=>{lastMessages=m;return JSON.parse(m.at(-1).content).task==='evaluate'?JSON.stringify(grade):'Owner 是连接归属，Authority 是权威裁决。请看 ServerFire。';}});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
   const browser=await chromium.launch({headless:true,channel:'msedge'});

@@ -818,3 +818,7 @@ Weapon 新增独立 FireInterval/RecoilPitch/RecoilYaw/RecoilRecovery，Server B
 - 测试：先记录 RED 提交 67379c5，再完成实现。接口/进度/备份/错误与真实 DPAPI 测试通过；修正 PowerShell 版本模块路径冲突。后端相关覆盖 95.56% 行、81.54% 分支。新助教 E2E 与旧 32 课离线 E2E 通过；真实启动器已打开 127.0.0.1:38761，未配置真实 Key，未发起第三方付费模型调用。
 - Git：.gitignore 新增常见凭据文件规则；.githooks/pre-commit 及 staged secret guard，当前 hooksPath 已实际启用。扫描只报文件与行号，不输出秘密值。测试产物忽略，用户立绘按原样作为网页资产复制。
 - 交付与审查：使用说明 AI-ASSISTANT.md 明确 Key 输入位置、仓库外路径和 file→HTTP 的导出/恢复迁移。独立 reviewer 初查的 hook 未启用事项已解决，复查 PASS WITH FOLLOW-UP，要求提交前完整暂存并再扫秘密。详细证据/自评见 AI-VERIFICATION.md；没有改动 UE 游戏代码或资产。
+
+## 2026-09-10 学习助教保存设置 EFS 修复
+- 用户报告保存按钮报错；真实仓库外配置目录 Encrypted，虚拟凭据复现 rename EXDEV。修复为仅 EXDEV 密文复制回退及旧配置恢复；安全错误提示区分本机加密/文件写入/环境覆盖。未读取或覆盖正式 Key，未修改 UE。
+- 20 测试与真实 EFS 独立目录 Edge E2E PASS；整体行/分支/函数覆盖 94.02/81.25/82.76%。npm audit ENOLOCK（无 npm 运行依赖）。已用原启动器重启服务；详细证据和五轴自评见 learn/site/AI-VERIFICATION.md。

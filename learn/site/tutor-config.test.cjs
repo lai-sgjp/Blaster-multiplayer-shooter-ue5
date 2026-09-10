@@ -10,6 +10,11 @@ test('encrypted directory EXDEV saves and updates without losing previous config
   await store.write({baseUrl:'https://example.com',model:'first',apiMode:'responses',apiKey:''});
   await store.write({baseUrl:'https://example.com',model:'second',apiMode:'responses',apiKey:''});
   assert.equal((await store.read()).model,'second');
+  await fs.copyFile(path.join(folder,'config.json'),path.join(folder,'config.json.previous'));
+  await fs.writeFile(path.join(folder,'config.json'),'interrupted-copy');
+  assert.equal((await store.read()).model,'second');
+  await store.write({baseUrl:'https://example.com',model:'second',apiMode:'responses',apiKey:''});
+  await assert.rejects(()=>fs.access(path.join(folder,'config.json.previous')));
   const failing={...io,copyFile:async(from,to,...args)=>{
     if(from.endsWith('.tmp')){await fs.writeFile(to,'partial');throw Object.assign(Error('fixture'),{code:'EACCES'});}
     return fs.copyFile(from,to,...args);
@@ -18,7 +23,7 @@ test('encrypted directory EXDEV saves and updates without losing previous config
   assert.equal((await store.read()).model,'second');
 });
 test('Windows DPAPI protects persisted test credential and can restore/update/remove it',{skip:process.platform!=='win32'},async()=>{
-  const folder=path.join(__dirname,'test-results','config-fixture');await fs.mkdir(folder,{recursive:true});
+  const folder=process.env.BLASTER_TUTOR_TEST_EFS==='1'?path.join(process.env.LOCALAPPDATA,'BlasterLab','assistant','diagnostic-fixture'):path.join(__dirname,'test-results','config-fixture');await fs.mkdir(folder,{recursive:true});
   const names=['BLASTER_TUTOR_API_KEY','BLASTER_TUTOR_BASE_URL','BLASTER_TUTOR_MODEL'];const previous=Object.fromEntries(names.map(n=>[n,process.env[n]]));
   try{
     for(const n of names)delete process.env[n];
