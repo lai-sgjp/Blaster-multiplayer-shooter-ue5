@@ -42,3 +42,15 @@ learn/site/.local/
 learn/site/test-results/
 learn/site/playwright-report/
 learn/site/node_modules/
+
+# Secrets must never enter the repository (including other project integrations)
+.env
+.env.*
+!.env.example
+!.env.template
+**/secrets.json
+**/credentials.json
+**/api-keys.json
+**/config.local.json
+*.dpapi
+learn/site/tutor.config.json

@@ -49,7 +49,7 @@ function home() {
   <div class="section-row"><h2>你的学习路线</h2><a href="#courses">查看全部 ${lessons.length} 节课程 →</a></div><div class="stage-grid">${[0,1,2,3,4,5].map(stageCard).join('')}</div><div class="section-row"><h2>延伸一步</h2><a href="#doc=learn/site/PLAN-RECONCILIATION.md">计划合并与覆盖说明 →</a></div><div class="stage-grid">${stageCard(6)}</div>
   <div class="panel bottom-panel"><div class="panel-title">最近 28 天的学习足迹 <span>修改笔记或更新自评时点亮</span></div><div class="heatmap">${Array.from({length:28},(_,i)=>{const d=new Date();d.setDate(d.getDate()-27+i);const day=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return `<span class="${state.activity[day]?'lit':''}" title="${day}：${state.activity[day]?'有学习记录':'暂无记录'}" aria-label="${day}：${state.activity[day]?'有学习记录':'暂无记录'}"></span>`;}).join('')}</div></div>`;
 }
-function row(l) { const n=P.count(state.lessons[l.id]);return `<a class="lesson-row" href="#lesson=${l.id}"><div><span class="lesson-index">${l.id} · 阶段 ${l.stage}</span><h3>${esc(l.title)}</h3><p>${esc(l.tags)} · 建议 ${l.minutes} 分钟起，验证可另安排</p></div><div><span class="chip">${n===4?'已完成':n?`${n}/4 进行中`:'待学习'}</span><div class="card-foot">${state.lessons[l.id]?.review?'待复习':'进入课程 →'}</div></div></a>`; }
+function row(l) { const item=state.lessons[l.id],n=P.count(item),assessment=item?.assessments?.at(-1);return `<a class="lesson-row" href="#lesson=${l.id}"><div><span class="lesson-index">${l.id} · 阶段 ${l.stage}</span><h3>${esc(l.title)}</h3><p>${esc(l.tags)} · 建议 ${l.minutes} 分钟起，验证可另安排</p>${assessment?`<p class="ai-score">最近 AI 回答评价：${assessment.evaluation.score}/100 · 进入本课点击角色查看</p>`:''}</div><div><span class="chip">${n===4?'已完成':n?`${n}/4 进行中`:'待学习'}</span><div class="card-foot">${item?.review?'待复习':'进入课程 →'}</div></div></a>`; }
 function courses(stage) {
   app.innerHTML=heading('COURSE MAP',stage===undefined?'课程地图':stageNames[stage],stage===undefined?'先完成 P0，再进入动画与在线系统；所有课程随时可读。':stageDesc[stage])+`<div class="filters"><input id="search" type="search" aria-label="搜索课程" placeholder="搜索课程、概念或函数，如 ShotId、FABRIK…"><select id="filter" aria-label="进度筛选"><option value="all">所有状态</option><option value="todo">未完成</option><option value="done">已完成</option><option value="review">待复习</option></select></div><div id="results" class="lesson-list"></div>`;
   const filter=()=>{const q=document.querySelector('#search').value.toLowerCase().trim(),f=document.querySelector('#filter').value;const found=lessons.filter(l=>(stage===undefined||l.stage===stage)&&JSON.stringify(l).toLowerCase().includes(q)&&(f==='all'||f==='done'&&P.count(state.lessons[l.id])===4||f==='todo'&&P.count(state.lessons[l.id])<4||f==='review'&&state.lessons[l.id]?.review));document.querySelector('#results').innerHTML=found.length?found.map(row).join(''):'<div class="empty">没有匹配课程，试试其他关键词或状态。</div>';};
@@ -81,7 +81,7 @@ function lesson(id) {
   if(l.id==='L11') {const update=()=>{const t=Number(document.querySelector('#shot-time').value)/1000;const alpha=(t-10)/.1;const valid=t>=10;const x=Math.min(1,Math.max(0,alpha));document.querySelector('#lab-box').style.left=(8+x*84)+'%';document.querySelector('#lab-box').style.opacity=valid?1:.2;document.querySelector('#lab-result').textContent=!valid?`t=${t.toFixed(3)}：早于最旧历史帧，拒绝查询。`:t>10.1?`t=${t.toFixed(3)}：晚于最新帧但未超过 +0.1 秒，SampleFrame 返回最新帧，x=100。ServerFire 还会独立检查请求时间。`:`t=${t.toFixed(3)}：Alpha = (${t.toFixed(3)} − 10.0) / (10.1 − 10.0) = ${alpha.toFixed(2)}，x = ${(alpha*100).toFixed(1)}。`;};document.querySelector('#shot-time').oninput=update;update();}
 }
 function review() {
-  const selected=lessons.filter(l=>{const d=state.lessons[l.id];return d&&(d.review||d.notes||d.proof||d.speech);});
+  const selected=lessons.filter(l=>{const d=state.lessons[l.id];return d&&(d.review||d.notes||d.proof||d.speech||d.assessments?.length);});
   app.innerHTML=heading('REFLECT & REMEMBER','复习与记录','需要复习的课、自己的概念卡、验证证据和面试表达，都在这里。')+`<button id="review-export">导出学习备份 ↗</button><div class="lesson-list" style="margin-top:22px">${selected.length?selected.sort((a,b)=>Number(!!state.lessons[b.id].review)-Number(!!state.lessons[a.id].review)).map(l=>{const d=state.lessons[l.id];return `<div class="panel">${row(l)}${['notes','proof','speech'].map((f,i)=>d[f]?`<details><summary>${['概念卡','验证记录','我的面试回答'][i]}</summary><p class="review-note">${esc(d[f])}</p></details>`:'').join('')}<div class="subtle">上次修改：${esc(d.updated?new Date(d.updated).toLocaleString():'未记录')}</div></div>`;}).join(''):'<div class="empty">还没有记录。打开第一课，写下一句自己的理解。<p><a class="button primary" href="#lesson=L01">开始学习 →</a></p></div>'}</div>`;
   document.querySelector('#review-export').onclick=exportData;
 }
@@ -96,6 +96,7 @@ function render() {
   document.querySelector('#breadcrumb').textContent=({home:'学习总览',courses:'课程地图',stage:'阶段课程',lesson:'课程学习',review:'复习与记录',library:'项目资料库',doc:'项目讲义',source:'源码阅读'})[type]||'学习空间';
   if(type==='home') home();else if(type==='courses') courses();else if(type==='stage'&&/^\d$/.test(value)&&stageNames[+value]) courses(+value);else if(type==='lesson') lesson(value);else if(type==='review') review();else if(type==='library') library();else if(type==='doc'&&docs[value]) app.innerHTML=`<div class="pagination"><a class="button" href="#library">← 资料库</a></div><article class="document">${docs[value].html}</article>`;else if(type==='source'&&sources[value])app.innerHTML=`<h1>源码阅读</h1><p class="subtle">${esc(value)} · 构建时快照，代码变更后可重新生成</p><pre>${sources[value].text.split('\n').map((s,i)=>`<span class="source-line"><i>${i+1}</i>${esc(s)}</span>`).join('')}</pre>`;else missing();
   window.scrollTo(0,0);
+  window.dispatchEvent(new Event('blaster:render'));
 }
 function exportData() {
   const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`blaster-progress-${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('备份已生成。它包含个人笔记，请保留在自己的备份位置；恢复时按每课修改时间合并。');
@@ -106,7 +107,7 @@ document.querySelector('#mobile-import').onclick=()=>document.querySelector('#im
 document.querySelector('#import').onchange=async e=>{
   const file=e.target.files[0];if(!file)return;
   try{
-    if(file.size>8000000)throw Error('文件超过 8MB');
+    if(file.size>32000000)throw Error('文件超过 32MB');
     const incoming=P.validate(JSON.parse(await file.text()),ids);
     // Re-read disk state because another open page may have newer records.
     const raw=localStorage.getItem(KEY);let current=state;
@@ -120,3 +121,25 @@ window.addEventListener('storage',e=>{if(e.key===KEY){persistenceBlocked=true;no
 document.querySelector('#stage-nav').innerHTML=stageNames.map((n,i)=>`<a href="#stage=${i}"><i>${String(i).padStart(2,'0')}</i>${n}</a>`).join('');
 document.querySelector('#snapshot-date').textContent=builtAt.slice(0,10);
 render();
+
+// Narrow bridge: no API settings or secrets are ever part of learning state.
+window.BlasterLearning = {
+  currentLesson:()=>lessons.find(l=>'#lesson='+l.id===location.hash)||null,
+  record:id=>structuredClone(state.lessons[id]||{}),
+  addMessage(id,message){
+    if(!ids.includes(id))throw Error('无效课程');
+    const item=state.lessons[id]||={};const records=P.tutorRecords({tutorMessages:[...(item.tutorMessages||[]),message].slice(-12)});
+    item.tutorMessages=records.tutorMessages;return touch(id);
+  },
+  addAssessment(id,assessment){
+    if(!ids.includes(id))throw Error('无效课程');
+    const item=state.lessons[id]||={};const records=P.tutorRecords({assessments:[...(item.assessments||[]),assessment].slice(-5)});
+    item.assessments=records.assessments;return touch(id);
+  },
+  adopt(id,assessmentId){
+    const item=state.lessons[id],assessment=item?.assessments?.find(a=>a.id===assessmentId);
+    if(!assessment)throw Error('评价不存在');
+    for(const f of ['concept','source','interview','review'])if(assessment.evaluation.suggestion[f])item[f]=true;
+    assessment.adoptedAt=new Date().toISOString();const ok=touch(id);render();return ok;
+  }
+};

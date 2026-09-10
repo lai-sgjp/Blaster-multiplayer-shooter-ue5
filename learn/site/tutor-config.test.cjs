@@ -1,0 +1,20 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs/promises');
+const path=require('node:path');
+const {createConfigStore,protect}=require('./tutor-config.cjs');
+test('Windows DPAPI protects persisted test credential and can restore/update/remove it',{skip:process.platform!=='win32'},async()=>{
+  const folder=path.join(__dirname,'test-results','config-fixture');await fs.mkdir(folder,{recursive:true});
+  const names=['BLASTER_TUTOR_API_KEY','BLASTER_TUTOR_BASE_URL','BLASTER_TUTOR_MODEL'];const previous=Object.fromEntries(names.map(n=>[n,process.env[n]]));
+  try{
+    for(const n of names)delete process.env[n];
+    const store=createConfigStore({directory:folder}),secret=['fixture','protected','credential'].join('-');
+    await store.write({baseUrl:'https://example.com/v1',model:'fixture-model',apiMode:'chat',apiKey:secret});
+    const raw=await fs.readFile(path.join(folder,'config.json'),'utf8');assert.ok(!raw.includes(secret));assert.ok(JSON.parse(raw).protectedKey.length>20);
+    assert.equal((await store.read()).apiKey,secret);
+    process.env.BLASTER_TUTOR_API_KEY='environment-fixture';assert.equal((await store.read()).apiKey,'environment-fixture');await assert.rejects(()=>store.write({apiKey:'x'}));delete process.env.BLASTER_TUTOR_API_KEY;
+    await store.write({baseUrl:'https://example.com/v1',model:'fixture-model',apiMode:'chat',apiKey:''});assert.equal((await store.read()).apiKey,'');
+    await assert.rejects(()=>protect('invalid-cipher',true));
+    assert.equal((await createConfigStore({directory:path.join(folder,'missing')}).read()).apiKey,'');
+  }finally{for(const n of names){if(previous[n]===undefined)delete process.env[n];else process.env[n]=previous[n];}}
+});

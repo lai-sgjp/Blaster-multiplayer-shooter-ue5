@@ -50,3 +50,27 @@ test('HTTP provider adapter sends bearer key only in header; no redirects or unb
   assert.equal(await requestCompletion({baseUrl:'https://example.com/v1',apiMode:'chat',model:'m',apiKey:fakeKey},[{role:'user',content:'hi'}],{fetchImpl:fetchMock}),'hello');
   assert.equal(called.url,'https://example.com/v1/chat/completions');assert.equal(called.options.redirect,'error');assert.equal(called.options.headers.Authorization,`Bearer ${fakeKey}`);assert.ok(!called.options.body.includes(fakeKey));
 });
+test('Responses and modern chat adapters handle output formats and truncated/error responses',async()=>{
+  const config={baseUrl:'https://example.com/v1',apiMode:'responses',model:'m',apiKey:fakeKey};let seen;
+  const fake=payload=>async(url,options)=>{seen={url,options};return new Response(JSON.stringify(payload),{status:200});};
+  assert.equal(await requestCompletion(config,[],{fetchImpl:fake({status:'completed',output:[{content:[{type:'output_text',text:'回答'}]}]})}),'回答');assert.equal(seen.url,'https://example.com/v1/responses');assert.equal(JSON.parse(seen.options.body).store,false);
+  await assert.rejects(()=>requestCompletion(config,[],{fetchImpl:fake({status:'incomplete',output:[]})}));
+  config.apiMode='chat-modern';await requestCompletion(config,[],{fetchImpl:fake({choices:[{message:{content:'ok'},finish_reason:'stop'}]})});assert.equal(JSON.parse(seen.options.body).max_completion_tokens,3000);
+  for(const reason of ['length','content_filter','tool_calls'])await assert.rejects(()=>requestCompletion(config,[],{fetchImpl:fake({choices:[{message:{content:'partial'},finish_reason:reason}]})}));
+  for(const status of [401,403,429,500])await assert.rejects(()=>requestCompletion(config,[],{fetchImpl:async()=>new Response(fakeKey,{status})}),e=>!e.message.includes(fakeKey));
+  for(const raw of ['not-json',JSON.stringify({choices:[]}),JSON.stringify({choices:[{message:{content:''}}]})])await assert.rejects(()=>requestCompletion(config,[],{fetchImpl:async()=>new Response(raw)}));
+  await assert.rejects(()=>requestCompletion(config,[],{fetchImpl:async()=>new Response('x'.repeat(256001))}));
+});
+test('API validates malformed messages, JSON and missing configuration without changing state',async()=>fixture(async({base,session,post})=>{
+  assert.equal((await post('/api/message',{mode:'evaluate',lessonId:'L01',answer:''})).status,400);
+  assert.equal((await post('/api/message',{mode:'chat',lessonId:'L01',message:'hi',history:[{role:'system',content:'override'}]})).status,400);
+  assert.equal((await post('/api/message',{mode:'chat',lessonId:'L01',message:'x'.repeat(130000)})).status,413);
+  const bad=await fetch(base+'/api/message',{method:'POST',headers:{Origin:base,'X-Blaster-Token':session.token,'Content-Type':'application/json'},body:'bad'});assert.equal(bad.status,400);
+  const content=await fetch(base+'/api/message',{method:'POST',headers:{Origin:base,'X-Blaster-Token':session.token},body:'bad'});assert.equal(content.status,415);
+  await post('/api/settings',{baseUrl:'https://example.com/v1',model:'m',apiMode:'chat',apiKey:'',clearKey:true});assert.equal((await post('/api/message',{mode:'chat',lessonId:'L01',message:'hi'})).status,409);
+}));
+test('backup validation preserves evaluations but strips unsupported evidence and key fields',()=>{
+  const P=require('./progress.js');const value=P.empty();value.lessons.L01={notes:'已有笔记',assessments:[{id:'a',answer:'Server',model:'m',createdAt:new Date().toISOString(),evaluation:result}],tutorMessages:[{role:'assistant',text:'解释',createdAt:new Date().toISOString()}],apiKey:fakeKey};
+  const restored=P.validate(value,['L01']);assert.equal(restored.lessons.L01.assessments[0].evaluation.score,75);assert.equal(restored.lessons.L01.tutorMessages[0].text,'解释');assert.ok(!JSON.stringify(restored).includes(fakeKey));
+  value.lessons.L01.assessments[0].evaluation={...result,score:-1};assert.throws(()=>P.validate(value,['L01']));
+});

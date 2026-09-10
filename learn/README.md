@@ -6,6 +6,8 @@
 
 **直接打开 [Blaster Lab 学习网站](index.html)**：双击即可离线使用，包含课程、源码阅读、个人笔记、复习清单、进度看板与 JSON 备份恢复。使用说明见 [网站说明](site/README.md)。
 
+**AI 虚拟助教入口：[启动学习助教](启动学习助教.cmd)**。打开后点击右下角蕾米埃尔 → API 设置，即可配置兼容服务。密钥存于仓库外并由 Windows 用户加密；操作和旧进度迁移见 [助教说明](site/AI-ASSISTANT.md)。
+
 以[面试学习路线](INTERVIEW-LEARNING-ROADMAP.md)为唯一教学顺序：项目映射 → 框架与网络权限 → 权威射击与回溯 → 输入/动画/IK → Session/比赛/HUD → 构建验证与面试。已有基础无需重新从零学习。旧四周计划仅保留工程工作包及扩展知识，不再作为并行课程。详见[计划合并与课程覆盖](site/PLAN-RECONCILIATION.md)。
 
 - [Blaster 面试学习路线](INTERVIEW-LEARNING-ROADMAP.md)：结合 HSR 已学知识，按优先级规划新的多人射击技术栈。

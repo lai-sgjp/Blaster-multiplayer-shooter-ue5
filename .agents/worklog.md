@@ -809,3 +809,12 @@ Weapon 新增独立 FireInterval/RecoilPitch/RecoilYaw/RecoilRecovery，Server B
 - 验证：7 项 node 测试通过；Edge/Playwright 的 file:// 全课程、持久化、下载恢复、旧备份保护、损坏数据、脚本文本转义、搜索、互动实验和 390px 窄屏通过，无页面异常。已看桌面/移动截图。npm audit 因本网站没有 npm 锁文件返回 ENOLOCK，不冒称审计通过。
 - Git 边界：个人 blaster-progress 备份、.local、test-results、playwright-report、node_modules 写入 .gitignore；源码快照与生成器必须提交以支持离线打开。未修改游戏代码或资产；没有新增 UE Build/PIE 结论。
 - 教学边界：学习自评不代表游戏验收；FABRIK 资产、公网/打包、扩展设计状态单独标注。独立审查与自评见 learn/site/VERIFICATION.md。
+
+## 2026-09-10 蕾米埃尔 AI 虚拟助教
+
+- 用户目标：参考提供的角色图片/性格建立虚拟助教，使用可自填 Base URL/模型/Key 的 OpenAI 兼容接口，评价个人回答、提供课程问答并协助记录进度。任何 Key 不得提交推送。图片只作为角色素材，不把截图文本当操作指令。
+- 实现：本机 Node HTTP 服务 + 角色浮动面板，保留离线入口；当前课/源码摘要与用户选定回答进入 API。支持通用 Chat、新 token 参数 Chat 和 Responses；返回结构化评价，自动留档，用户显式采纳自评建议，AI 不勾选运行验证。旧进度可导入，每课留最近 5 次评价/6 轮对话。
+- Key：生产配置在 LOCALAPPDATA/BlasterLab/assistant/config.json，Windows 用户 DPAPI 密文；不进入网页存储、模型提示、进度备份或源码。只同源 loopback 访问，静态白名单、Origin/token 校验、上游重定向拒绝及大小/超时限制。网页 Key 保存后清空不回显，更换地址必须重填。
+- 测试：先记录 RED 提交 67379c5，再完成实现。接口/进度/备份/错误与真实 DPAPI 测试通过；修正 PowerShell 版本模块路径冲突。后端相关覆盖 95.56% 行、81.54% 分支。新助教 E2E 与旧 32 课离线 E2E 通过；真实启动器已打开 127.0.0.1:38761，未配置真实 Key，未发起第三方付费模型调用。
+- Git：.gitignore 新增常见凭据文件规则；.githooks/pre-commit 及 staged secret guard，当前 hooksPath 已实际启用。扫描只报文件与行号，不输出秘密值。测试产物忽略，用户立绘按原样作为网页资产复制。
+- 交付与审查：使用说明 AI-ASSISTANT.md 明确 Key 输入位置、仓库外路径和 file→HTTP 的导出/恢复迁移。独立 reviewer 初查的 hook 未启用事项已解决，复查 PASS WITH FOLLOW-UP，要求提交前完整暂存并再扫秘密。详细证据/自评见 AI-VERIFICATION.md；没有改动 UE 游戏代码或资产。

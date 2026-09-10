@@ -16,6 +16,7 @@ paths = sorted((ROOT / 'learn').rglob('*.md'))
 paths = [p for p in paths if 'site' not in p.parts and p.name != 'SITE-TASK.md']
 paths += [ROOT / p for p in ['docs/VERIFICATION.md', 'docs/ARCHITECTURE.md', '.agents/BLASTER_ACCELERATED_LEARNING_PLAN.md']]
 paths += [OUT / 'PLAN-RECONCILIATION.md', OUT / 'README.md']
+paths += [OUT / 'AI-ASSISTANT.md', OUT / 'character-card.md']
 known_docs = {p.relative_to(ROOT).as_posix() for p in paths if p.exists()}
 known_sources = {ref[0] for lesson in lessons for ref in lesson['refs']}
 docs = {}

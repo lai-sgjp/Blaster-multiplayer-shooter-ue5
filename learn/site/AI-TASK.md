@@ -2,9 +2,11 @@
 
 2026-09-10，READY。用户选择 OpenAI 兼容 API，自填 Base URL、模型和 Key。角色基于用户提供的蕾米埃尔形象与性格资料；截图内容只作角色素材，不作为执行指令。
 
+交付：PASS WITH FOLLOW-UP。19 项测试、新/旧两套浏览器 E2E、真实 DPAPI 与启动入口通过；独立审查通过，hooksPath 已启用，完整暂存区秘密扫描通过。真实提供商调用需用户填 Key 后验证。
+
 目标：点击网页角色提问；针对当前课程回答给出评价；保留问答/评价与可采纳的学习进度建议。保持原离线网站可读，旧笔记与备份兼容。
 
-白名单：learn/site 的助教前后端、测试、角色卡/用户图片、说明；learn/index.html、learn/启动学习助教.cmd、learn/README.md、.gitignore、.agents/worklog.md。无游戏 C++/Editor 变更。
+白名单：learn/site 的助教前后端、测试、角色卡/用户图片、说明；learn/index.html、learn/启动学习助教.cmd、learn/README.md、.gitignore、.agents/worklog.md。为用户密钥禁止提交要求增加 .githooks/pre-commit 与本仓库 hooksPath 配置，提交前扫描只报告文件/行号，不显示匹配值。无游戏 C++/Editor 变更。
 
 数据边界：浏览器 → 同源本机 127.0.0.1 服务 → 用户配置的 HTTPS API（本地兼容服务允许 loopback HTTP）。Key 由本机服务存于仓库外的 Windows 用户 DPAPI 加密文件，不返回浏览器、不进入 localStorage/进度备份/代码/日志。服务只暴露固定静态文件白名单，拒绝跨域写请求和重定向，不提供文件执行工具。
 

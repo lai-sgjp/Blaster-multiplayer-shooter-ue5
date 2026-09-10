@@ -1,0 +1,2 @@
+# Shell hooks must stay executable by Git's sh on Windows and Unix checkouts.
+.githooks/* text eol=lf

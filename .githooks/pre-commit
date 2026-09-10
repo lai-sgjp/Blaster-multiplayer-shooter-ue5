@@ -1,0 +1,2 @@
+#!/bin/sh
+node "$(git rev-parse --show-toplevel)/learn/site/check-secrets.cjs" --staged
