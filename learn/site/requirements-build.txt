@@ -1,0 +1,2 @@
+# Needed only to regenerate content.js; offline browsing has no dependencies.
+Markdown==3.8

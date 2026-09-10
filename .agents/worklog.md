@@ -790,3 +790,22 @@ Weapon 新增独立 FireInterval/RecoilPitch/RecoilYaw/RecoilRecovery，Server B
 - 其他修改：更新根目录 `CLAUDE.md` 和 `.agents/agents.md` 的过时项目阶段描述，指向当前源码、验证矩阵和学习入口；未修改游戏 C++、Content 资产或用户已有未提交功能改动。
 - 教学边界：文档区分源码存在、构建通过、PIE 已验证和公网/打包未验收；没有把 Steam 配置说成公网联机证据，没有把 FABRIK 数据准备说成 AnimGraph 视觉完成，也没有记录配置中的敏感值。
 - 验证：已检查新增文件路径和 Git 状态；下一步运行 Markdown 链接/源码路径一致性检查与 `git diff --check`。本轮仅新增/更新文档，不需要重新构建游戏。
+
+## 2026-09-08 Blaster 面试学习路线规划
+
+- 用户目标：将上一轮 HSR 与 Blaster 技术栈对照结论，整理成可执行的学习路线，并落入 `learn/` Markdown 文档。
+- 检查依据：HSR `learn/AI.md`、`BattleSystem.md`、`CppEngineDepth.md`、`EquipmentSystem.md`、`GAS.md`、`SaveSystem.md`；Blaster 的 `learn/PROJECT-TECH-STACK.md`、主线学习文档、`Source/Blaster`、`Plugins/MultiplayerSessions`、`Blaster.uproject`。
+- 结论：用户已有 UE C++ 引擎基础、状态机/事务/Subsystem、GAS、AI、装备和存档架构知识；当前新增缺口集中在 Actor/Component 网络复制、RPC/Ownership/Authority、服务器权威射击、Hitscan Server Rewind、多人 Gameplay Framework、Enhanced Input、射击动画/IK、Online Session/Travel、HUD/UMG 和 Build/验证证据。
+- 学习决策：不重复讲 GAS、AI、装备、存档实现；采用 6 周、每周 5 天、每天 60–90 分钟的路线，每阶段固定输出概念卡、源码数据流、验证证据和面试回答。
+- 实际修改：新增 `learn/INTERVIEW-LEARNING-ROADMAP.md`；更新 `learn/README.md` 增加路线入口；未修改游戏 C++、Content 资产或配置。
+- 验证：执行 Markdown 链接检查、源码路径检查和 `git diff --check`；未重新构建游戏，因为本轮只新增学习文档。
+
+## 2026-09-10 Blaster Lab 学习网站与计划整合
+
+- 用户目标：在 learn 下建立覆盖待学计划、结合真实项目例子、通俗教学与记录/可视化进度的网站；追加要求处理新旧计划冲突冗余，完成后 commit 并推送，永久排除个人/生成产物。
+- 依据：较新的 INTERVIEW-LEARNING-ROADMAP、旧 B00–B12 工程计划、现有讲义和当前 C++。保留本轮开始前已有的学习路线/README/本日志改动；这些是本次网站的直接依据，一并纳入相关交付。
+- 实现：learn/index.html 双击离线入口；32 课（28 主线、4 选修）、33 份内嵌资料、19 个源码文件快照；概念/项目例子/数据流/验证/面试回答结构；源码行号与哈希；进度看板、阶段统计、复习、笔记和 JSON 备份合并；历史插值互动实验。
+- 冲突处理：新路线成为唯一教学顺序；旧四周计划保留工程编号，旧功能阶段标为过时，先答题要求改为先教学再复述；独有预测、武器差异化、Teams/CTF 等成为明确未实现的设计课。映射见 learn/site/PLAN-RECONCILIATION.md。
+- 验证：7 项 node 测试通过；Edge/Playwright 的 file:// 全课程、持久化、下载恢复、旧备份保护、损坏数据、脚本文本转义、搜索、互动实验和 390px 窄屏通过，无页面异常。已看桌面/移动截图。npm audit 因本网站没有 npm 锁文件返回 ENOLOCK，不冒称审计通过。
+- Git 边界：个人 blaster-progress 备份、.local、test-results、playwright-report、node_modules 写入 .gitignore；源码快照与生成器必须提交以支持离线打开。未修改游戏代码或资产；没有新增 UE Build/PIE 结论。
+- 教学边界：学习自评不代表游戏验收；FABRIK 资产、公网/打包、扩展设计状态单独标注。独立审查与自评见 learn/site/VERIFICATION.md。

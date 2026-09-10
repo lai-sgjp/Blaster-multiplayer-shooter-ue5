@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Blaster Lab · 项目学习室</title><link rel="stylesheet" href="site/style.css"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#home"><span class="brand-icon">B<span>↗</span></span><span>BLASTER <b>LAB</b><small>UE5.6 · 项目学习室</small></span></a>
+  <p class="nav-caption">我的学习空间</p>
+  <nav aria-label="主导航"><a href="#home">◫ <span>学习总览</span></a><a href="#courses">▤ <span>课程地图</span></a><a href="#review">↺ <span>复习与记录</span></a><a href="#library">⌘ <span>项目资料库</span></a></nav>
+  <div class="sidebar-line"></div><p class="nav-caption">学习路径</p><div id="stage-nav"></div>
+  <div class="sidebar-bottom"><span class="status-dot"></span>离线可用 · 记录保存在此浏览器<p>理解原理，读懂自己的项目。</p><button id="export">导出学习备份 ↗</button><label class="import">恢复备份<input id="import" type="file" accept=".json,application/json"></label></div>
+</aside>
+<main>
+  <header class="topbar"><span>工作空间 <span class="slash">/</span> <b id="breadcrumb">学习总览</b></span><span class="local-tag">● LOCAL LEARNING</span><span class="mobile-backup"><button id="mobile-export">备份</button><button id="mobile-import">恢复</button></span></header>
+  <div id="notice" role="status" aria-live="polite"></div><div id="app"></div>
+  <footer>BLASTER LAB <span>学习自评 ≠ 功能验收 · 源码快照 <span id="snapshot-date"></span></span></footer>
+</main>
+<script src="site/content.js"></script><script src="site/progress.js"></script><script src="site/app.js"></script>
+</body></html>

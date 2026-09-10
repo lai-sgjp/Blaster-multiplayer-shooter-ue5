@@ -35,3 +35,10 @@ __pycache__/
 # Local Unreal MCP snapshots and staging copies
 .codex/unreal-mcp.zip
 .codex/unreal-mcp-stage/
+
+# Personal learning records and reproducible browser test artifacts
+learn/**/blaster-progress-*.json
+learn/site/.local/
+learn/site/test-results/
+learn/site/playwright-report/
+learn/site/node_modules/
