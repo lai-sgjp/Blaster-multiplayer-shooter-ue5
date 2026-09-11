@@ -1,4 +1,5 @@
 #include "BlasterCharacter.h"
+#include "BlasterPlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -14,11 +15,17 @@
 #include "TimerManager.h"
 #include "Blaster/BlasterComponent/LagCompensationComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Blaster/BlasterComponent/InventoryComponent.h"
+#include "Blaster/BlasterComponent/BlasterHitRules.h"
+#include "Blaster/HUD/StreetSessionSubsystem.h"
+#include "Engine/GameInstance.h"
 
 ABlasterCharacter::ABlasterCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	LagCompensation = CreateDefaultSubobject<ULagCompensationComponent>(TEXT("LagCompensation"));
+	Inventory = CreateDefaultSubobject<UInventoryComponent>(TEXT("Inventory"));
 
 	bUseControllerRotationYaw = false;
 	GetCharacterMovement()->bOrientRotationToMovement = true;
@@ -63,9 +70,11 @@ void ABlasterCharacter::ReceiveDamage(AActor* DamagedActor, float Damage, const 
 	const ABlasterGameMode* ActiveMode = GetWorld()->GetAuthGameMode<ABlasterGameMode>();
 	if (!ActiveMode || ActiveMode->GetMatchState() != MatchState::InProgress) return;
 	Health = FMath::Clamp(Health - Damage, 0.f, 100.f);
+	if (auto* PC = Cast<ABlasterPlayerController>(GetController())) PC->ClientFeedback(3);
 	if (Health <= 0.f)
 	{
 		bEliminated = true;
+		Inventory->Clear();
 		OnRep_Eliminated();
 		if (ABlasterGameMode* Mode = GetWorld()->GetAuthGameMode<ABlasterGameMode>())
 			Mode->RecordElimination(GetController(), InstigatorController);
@@ -141,6 +150,11 @@ void ABlasterCharacter::PostInitializeComponents()
 void ABlasterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	OverheadWidgetComponent->SetVisibility(false);
+	GetCapsuleComponent()->SetCollisionResponseToChannel(BlasterHit::Channel, ECR_Ignore);
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	GetMesh()->SetCollisionResponseToChannel(BlasterHit::Channel, ECR_Block);
+	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 	if (HasAuthority()) GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 	if (HasAuthority()) OnTakeAnyDamage.AddDynamic(this, &ABlasterCharacter::ReceiveDamage);
@@ -219,8 +233,9 @@ void ABlasterCharacter::Look(const FInputActionValue& Value)
 {
 	const FVector2D LookAxisValue = Value.Get<FVector2D>();
 	if (GetController()) {
-		AddControllerYawInput(LookAxisValue.X);
-		AddControllerPitchInput(LookAxisValue.Y);
+		const float Sensitivity = GetGameInstance()->GetSubsystem<UStreetSessionSubsystem>()->Sensitivity;
+		AddControllerYawInput(LookAxisValue.X * Sensitivity);
+		AddControllerPitchInput(LookAxisValue.Y * Sensitivity);
 	}
 }
 

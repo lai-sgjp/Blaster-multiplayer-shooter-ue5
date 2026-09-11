@@ -57,6 +57,12 @@ protected:
 	);
 
 private:
+	UPROPERTY(EditDefaultsOnly, Category = Damage, meta = (ClampMin = "0"))
+	float BodyDamage = 20.f;
+	UPROPERTY(EditDefaultsOnly, Category = Damage, meta = (ClampMin = "0"))
+	float PelletDamage = 4.f;
+	UPROPERTY(EditDefaultsOnly, Category = Damage, meta = (ClampMin = "1"))
+	float HeadMultiplier = 2.f;
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon Properties")
 	EFireModel FireModel = EFireModel::Projectile;
 	UPROPERTY(Replicated, VisibleInstanceOnly, Category = Ammo)
@@ -89,6 +95,8 @@ private:
 public:	
 	void SetWeaponState(EWeaponState State);
 	void Drop();
+	float GetBodyDamage() const { return FireModel == EFireModel::Shotgun ? PelletDamage : BodyDamage; }
+	float GetHeadMultiplier() const { return HeadMultiplier; }
 	int32 GetAmmo() const { return Ammo; }
 	EFireModel GetFireModel() const { return FireModel; }
 	int32 GetMagazineCapacity() const { return MagazineCapacity; }

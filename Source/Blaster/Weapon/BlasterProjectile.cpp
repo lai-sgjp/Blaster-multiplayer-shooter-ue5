@@ -6,6 +6,11 @@
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/DamageType.h"
 #include "BlasterShotEffect.h"
+#include "Weapon.h"
+#include "Blaster/Character/BlasterCharacter.h"
+#include "Blaster/BlasterComponent/CombatComponent.h"
+#include "Blaster/BlasterComponent/BlasterHitRules.h"
+#include "Components/SkeletalMeshComponent.h"
 
 ABlasterProjectile::ABlasterProjectile()
 {
@@ -19,7 +24,7 @@ ABlasterProjectile::ABlasterProjectile()
 	SetRootComponent(Collision);
 	Collision->InitSphereRadius(3.f);
 	Collision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-	Collision->SetCollisionObjectType(ECC_WorldDynamic);
+	Collision->SetCollisionObjectType(BlasterHit::Channel);
 	Collision->SetCollisionResponseToAllChannels(ECR_Ignore);
 	Collision->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	Collision->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
@@ -68,8 +73,23 @@ void ABlasterProjectile::OnHit(UPrimitiveComponent* HitComponent, AActor* OtherA
 {
 	if (HasAuthority() && OtherActor != GetInstigator() && OtherActor != GetOwner())
 	{
-		if (IsValid(OtherActor))
-			UGameplayStatics::ApplyDamage(OtherActor, 20.f, GetInstigatorController(), this, UDamageType::StaticClass());
+		if (auto* Victim = Cast<ABlasterCharacter>(OtherActor); Victim && !Victim->IsEliminated())
+		{
+			const AWeapon* Weapon = Cast<AWeapon>(GetOwner());
+			// Swept projectile contacts can report the receiving component without its
+			// skeletal body. Refine against that mesh along the same flight segment.
+			FHitResult BoneHit;
+			FCollisionQueryParams Query(SCENE_QUERY_STAT(ProjectileBone), false, GetInstigator());
+			const FVector Direction = Movement->Velocity.GetSafeNormal();
+			const bool bRefined = Victim->GetMesh()->LineTraceComponent(BoneHit,
+				Hit.TraceStart, Hit.TraceEnd + Direction * 10.f, Query);
+			const FName Bone = bRefined ? BoneHit.BoneName : Hit.BoneName;
+			const bool bHead = BlasterHit::IsHead(Bone);
+			UE_LOG(LogTemp, VeryVerbose, TEXT("StreetProjectile bone=%s contact=%s refined=%d"), *Bone.ToString(), *Hit.BoneName.ToString(), bRefined);
+			UGameplayStatics::ApplyDamage(Victim, BlasterHit::Damage(Weapon ? Weapon->GetBodyDamage() : 20.f,
+				Weapon ? Weapon->GetHeadMultiplier() : 2.f, bHead), GetInstigatorController(), this, UDamageType::StaticClass());
+			if (GetInstigator()) if (auto* Combat = GetInstigator()->FindComponentByClass<UCombatComponent>()) Combat->ClientConfirmHit(bHead);
+		}
 		Destroy();
 	}
 }

@@ -1,0 +1,110 @@
+{
+  "scope": "Tracked original Street assets; third-party Content and local Saved outputs remain ignored",
+  "assets": [
+    {
+      "path": "Content/Street/Audio/Body.uasset",
+      "bytes": 12144,
+      "sha256": "065be85c6ab6da7c79fa23113f74318125413e86efab59ca2fde213ae57685be"
+    },
+    {
+      "path": "Content/Street/Audio/Head.uasset",
+      "bytes": 14811,
+      "sha256": "8957a985a7e6e33457bb7f3d1678e1631b5e7394325030d99213f2a8c6d2322d"
+    },
+    {
+      "path": "Content/Street/Audio/Hurt.uasset",
+      "bytes": 16842,
+      "sha256": "3d633dcf809474ecb4d8802e220e7ad820657019a0ec691732daf5c816da5d03"
+    },
+    {
+      "path": "Content/Street/Audio/Pickup.uasset",
+      "bytes": 16580,
+      "sha256": "5a9550c794a6d36df3a4c184f502c95d0aa86e3b8384feac9fc1298fd3063d1a"
+    },
+    {
+      "path": "Content/Street/Audio/StreetWind.uasset",
+      "bytes": 89578,
+      "sha256": "75d4a264affd974f9067ba44016fd15cbfc3adeb144d12e4269992461c9d7979"
+    },
+    {
+      "path": "Content/Street/Maps/StreetArena.umap",
+      "bytes": 9536363,
+      "sha256": "4548752904a24a6b0af6bf515604a873f55f74d07fbf4881b205a255469a0d4e"
+    },
+    {
+      "path": "Content/Street/Maps/StreetLobby.umap",
+      "bytes": 1553779,
+      "sha256": "147e4b04788affc30370bbf15344cf2a3ac2d9344e79449ed49e832d87f93746"
+    },
+    {
+      "path": "Content/Street/Maps/StreetStart.umap",
+      "bytes": 1542675,
+      "sha256": "157983aebac72d5c0ba8055bd6676784e479f5e3b79447edf584768fabde2035"
+    },
+    {
+      "path": "Content/Street/Materials/M_Amber.uasset",
+      "bytes": 9730,
+      "sha256": "12591ca0a3289e4cfafa2df592ebfa2014f4b78fb540da5a6d7fe8287404fcfb"
+    },
+    {
+      "path": "Content/Street/Materials/M_Brick.uasset",
+      "bytes": 10706,
+      "sha256": "384c46c0791ecccec7b1baf179dcb6a3a59e165f6e1da8589d066dd8efc08af6"
+    },
+    {
+      "path": "Content/Street/Materials/M_Glass.uasset",
+      "bytes": 9545,
+      "sha256": "86244093678174f2a0acb7bbeb504d095cf7eb2795fa3862e87869cd3a6c6f38"
+    },
+    {
+      "path": "Content/Street/Materials/M_Leaf.uasset",
+      "bytes": 9072,
+      "sha256": "988640f9962908913d6f40d92dd4f47260edee7be9917655c2437f69fcb7ddc1"
+    },
+    {
+      "path": "Content/Street/Materials/M_Metal.uasset",
+      "bytes": 9019,
+      "sha256": "778bd316ea361de01545cb349c58ba288f2938f1c59f3b36284ae5d5cac301cd"
+    },
+    {
+      "path": "Content/Street/Materials/M_Ochre.uasset",
+      "bytes": 13038,
+      "sha256": "faa0afd3b945aca7c151d600713f6b2e45590d6fc48e8cdeb27f2874dc9eb2d3"
+    },
+    {
+      "path": "Content/Street/Materials/M_Paving.uasset",
+      "bytes": 10402,
+      "sha256": "683cce639f20f1c7d4a3609f5085adf2027b884feca8ed75a20888e0c58c70ec"
+    },
+    {
+      "path": "Content/Street/Materials/M_Red.uasset",
+      "bytes": 8965,
+      "sha256": "0d734c6f38f5a1169287473174068f4658583a9d672f39bb93324c97ce0e33b7"
+    },
+    {
+      "path": "Content/Street/Materials/M_Roof.uasset",
+      "bytes": 9393,
+      "sha256": "595f139b273b51bef065d0a2199759a4b3156555c218b6aca400c7776ca010f8"
+    },
+    {
+      "path": "Content/Street/Materials/M_Stone.uasset",
+      "bytes": 9287,
+      "sha256": "63f68a3841ab80cad390c7dc63343b368e71ca42dad22bf6f08116c5da15a327"
+    },
+    {
+      "path": "Content/Street/Materials/M_Wood.uasset",
+      "bytes": 8997,
+      "sha256": "6fffc8feb9a1fa5ed5eb635537ff48b814d5fab9362cec92322cc3775e145e5b"
+    },
+    {
+      "path": "Content/Street/UI/StreetFont.uasset",
+      "bytes": 17003655,
+      "sha256": "a0324b8a2f95298f1bcdad6ad29b1bb7d511205407737145f3e05c6cbd302209"
+    },
+    {
+      "path": "Content/Street/UI/W_StreetScreen.uasset",
+      "bytes": 19713,
+      "sha256": "edaf7e4a338adc1fe27decbb2171ee7cdfb04a3eaca3cb796bb382522a3acaa4"
+    }
+  ]
+}

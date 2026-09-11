@@ -1,5 +1,8 @@
 # Unreal Engine generated files
 Content/
+!/Content/
+/Content/*
+!/Content/Street/
 Saved/
 Intermediate/
 DerivedDataCache/
@@ -54,3 +57,14 @@ learn/site/node_modules/
 **/config.local.json
 *.dpapi
 learn/site/tutor.config.json
+
+# Local overhaul experiments and workstation-specific QA launchers
+/Tools/Overhaul/Fonts/StreetFont.ttf
+/Tools/Overhaul/benchmark.ps1
+/Tools/Overhaul/package_window.py
+/Tools/Overhaul/inspect_*.py
+/Tools/Overhaul/open_arena.py
+/Tools/Overhaul/open_lobby.py
+/Tools/Overhaul/prepare_speed_ui.py
+/Tools/Overhaul/setup_small_pie.py
+/Tools/Overhaul/fix_lighting.py

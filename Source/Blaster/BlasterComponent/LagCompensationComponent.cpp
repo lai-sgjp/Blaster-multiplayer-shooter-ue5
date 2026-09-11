@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "BlasterHitRules.h"
 
 namespace
 {
@@ -82,7 +83,7 @@ bool ULagCompensationComponent::ConfirmHit(UWorld* World, AActor* Shooter, const
 		if (IsValid(It->GetEquippedWeapon())) Params.AddIgnoredActor(It->GetEquippedWeapon());
 	}
 	FHitResult WorldHit;
-	World->LineTraceSingleByChannel(WorldHit, Start, End, ECC_Visibility, Params);
+	World->LineTraceSingleByChannel(WorldHit, Start, End, BlasterHit::Channel, Params);
 	float BestTime = WorldHit.bBlockingHit ? WorldHit.Time : 1.f;
 	for (TActorIterator<ABlasterCharacter> It(World); It; ++It)
 	{

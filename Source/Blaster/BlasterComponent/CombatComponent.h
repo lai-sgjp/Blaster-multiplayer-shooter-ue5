@@ -22,6 +22,12 @@ public:
 	void EquipWeapon(class AWeapon* WeaponToEquip);
 	void SetFireButtonPressed(bool bPressed);
 	FVector TraceAim(FHitResult& Hit) const;
+	bool IsMuzzleBlocked(FHitResult& Hit) const;
+	void StopForMenu() { SetFireButtonPressed(false); SetAiming(false); }
+	AWeapon* GetSecondaryWeapon() const { return SecondaryWeapon; }
+	UFUNCTION(Client, Reliable) void ClientConfirmHit(bool bHeadshot);
+	float GetHitFeedback() const { return HitFeedback; }
+	bool WasHeadshot() const { return bLastHeadshot; }
 	void Reload();
 	int32 GetCarriedAmmo() const { return CarriedAmmo; }
 	bool IsReloading() const { return bReloading; }
@@ -66,6 +72,8 @@ private:
 	void ClientApplyRecoil(AWeapon* FiredWeapon, float Pitch, float Yaw, float Recovery);
 	UPROPERTY(VisibleInstanceOnly, Category = Handling)
 	float ShotFeedback = 0.f;
+	float HitFeedback = 0.f;
+	bool bLastHeadshot = false;
 	FVector2D RecoverableRecoil = FVector2D::ZeroVector;
 	float RecoverySpeed = 5.f;
 	double LastRecoilTime = -1.0;

@@ -1,6 +1,8 @@
 #include "BlasterPickup.h"
+#include "Blaster/Character/BlasterPlayerController.h"
 #include "Blaster/Character/BlasterCharacter.h"
 #include "Blaster/BlasterComponent/CombatComponent.h"
+#include "Blaster/BlasterComponent/InventoryComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
@@ -71,10 +73,14 @@ void ABlasterPickup::OnOverlap(UPrimitiveComponent* Component, AActor* Actor, UP
 	const AGameState* State = GetWorld()->GetGameState<AGameState>();
 	if (!Character || Character->IsEliminated() || !State || State->GetMatchState() != MatchState::InProgress) return;
 	bool bApplied = false;
-	if (Kind == EBlasterPickupKind::Health) bApplied = Character->Heal(25.f);
-	else if (Kind == EBlasterPickupKind::Speed) bApplied = Character->ApplySpeedBuff();
+	if (Kind != EBlasterPickupKind::Ammo)
+	{
+		if (auto* Inventory = Character->FindComponentByClass<UInventoryComponent>())
+			bApplied = Inventory->Add(Kind == EBlasterPickupKind::Health ? ESupplyKind::Medical : ESupplyKind::Speed);
+	}
 	else if (auto* Combat = Character->FindComponentByClass<UCombatComponent>()) bApplied = Combat->AddCarriedAmmo(30);
 	if (!bApplied) return;
+	if (auto* PC = Cast<ABlasterPlayerController>(Character->GetController())) PC->ClientFeedback(2);
 	bConsumed = true;
 	SetActorHiddenInGame(true);
 	Area->SetCollisionEnabled(ECollisionEnabled::NoCollision);

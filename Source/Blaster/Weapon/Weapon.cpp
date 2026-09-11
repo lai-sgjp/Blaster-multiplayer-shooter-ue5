@@ -6,6 +6,7 @@
 #include "Components/WidgetComponent.h"
 #include "Blaster/Character/BlasterCharacter.h"
 #include "Net/UnrealNetwork.h"
+#include "Blaster/BlasterComponent/BlasterHitRules.h"
 
 AWeapon::AWeapon()
 {
@@ -33,6 +34,8 @@ AWeapon::AWeapon()
 void AWeapon::BeginPlay()
 {
 	Super::BeginPlay();
+	WeaponMesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	WeaponMesh->SetCollisionResponseToChannel(BlasterHit::Channel, ECR_Ignore);
 	
 	if (GetLocalRole() == ENetRole::ROLE_Authority)
 	{

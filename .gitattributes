@@ -1,2 +1,8 @@
 # Shell hooks must stay executable by Git's sh on Windows and Unix checkouts.
 .githooks/* text eol=lf
+
+# Unreal assets and original source media must not be newline-converted.
+*.uasset binary
+*.umap binary
+*.otf binary
+*.wav binary

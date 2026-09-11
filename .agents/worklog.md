@@ -827,3 +827,13 @@ Weapon 新增独立 FireInterval/RecoilPitch/RecoilYaw/RecoilRecovery，Server B
 - 根据用户语言数据库重写角色卡：语境接话、克制称呼与调侃、认真/挫败时收起玩笑；亲近程度参考可见历史与偏好，不按学习成绩或消息数升级。用户提供剧情与台词没有独立核验，明确为演绎参考。
 - 拆除聊天固定讲义结构，闲聊不强拉教学；评价保持 JSON/评分契约但反馈采用自然对话。重建 32 课/35 文档/19 源码快照；18 相关回归测试 PASS。仅提示与文案修改，不添加复述实现的测试。npm audit ENOLOCK（无 npm 运行依赖锁）。未读取或改写 API Key。
 - 自评：准确性4（未独立核验剧情，已标注），完整性4（提示已落地，真实模型语言效果尚待使用反馈），清晰性4（规则与原创例句分开），可操作性4（重启生效），简洁性4（角色卡较长但避免每轮模板）。平均4.0；优先后续观察真实对话是否仍重复称呼，再按实际例子微调。
+
+## 2026-09-11 B13 街区场景、战斗反馈、背包与客户端准心
+- 用户授权完整改造，随后明确开局为房主发起且人数多于两人（至少3人），上限8人；不要求满员或全员准备。现有Steam/SteamSockets实现会话，不增加后台或账号系统。
+- 已保存 StreetStart / StreetLobby / StreetArena，原创模块化砖石建筑、两三层通路、材质、声音和UMG首版；旧地图保留。Content原有忽略规则不变，资产清单见 docs/OVERHAUL-ASSET-MANIFEST.json。
+- C++统一头身规则/2倍倍率/服务器反馈，独立WeaponTrace，库存owner-only复制、服务器校验/上限3、医疗25、速度900持续8秒刷新不叠加；Tab/Esc只锁本地输入。大厅容量和倒计时/旅行清理已接入。
+- 用户实测反馈直接多人PIE Client 1没有准心。准心改用本地StreetWidget NativePaint，增加物理像素下限及黑描边；640×480 Client 1和关菜单后实拍确认可见。独立复审无阻断，整Widget每帧绘制仍可细分优化。
+- Editor/Game构建、Widget编译、Windows打包成功。服务器伤害40/20（霰弹逐颗4/8）、库存死亡9项、楼梯实走6项、碰撞6项通过；2/3/8人服务器开局和8世界旅行通过；独立打包8个本机IP进程连接，第9拒绝，主机关闭客户端回开始地图。单Steam账号创建/退出成功，跨机器独立账号搜索加入尚未验收。
+- 100ms远端库存7项通过并有authority=1日志。重要测试限制：UE5.6 Editor Python的GAllowActorScriptExecutionInEditor让RPC强制Local，包括嵌套C++调用；新增仅WITH_EDITOR/PIE可用下一引擎tick测试入口避开。早期Python直接remote-start条目不算真实远端RPC证据，已在验证记录更正。
+- 静态1080中等、主机+7个null-RHI客户端末6000帧平均3.239ms/P95 3.933ms。不是动态8人交火或前后路线性能验收。录像与截图Saved中。美术细节、全状态UI、跨账号Steam、动态战斗和固定路线性能仍有缺口，未将完整计划标为完成。
+- 实施/许可/验证/五轴自评见 docs/TASK-B13-Street-Overhaul.md、OVERHAUL-SOURCES.md、OVERHAUL-VERIFICATION.md。未Git暂存提交推送。保留用户其他修改，未更新全局记忆。

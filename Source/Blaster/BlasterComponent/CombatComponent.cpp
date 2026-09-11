@@ -1,5 +1,6 @@
-
 #include "CombatComponent.h"
+#include "Blaster/Character/BlasterPlayerController.h"
+
 #include "Blaster/Weapon/Weapon.h"
 #include "Blaster/Character/BlasterCharacter.h"
 #include "Engine/SkeletalMeshSocket.h"
@@ -23,6 +24,27 @@
 #include "Camera/PlayerCameraManager.h"
 #include "LagCompensationComponent.h"
 #include "Blaster/Weapon/BlasterShotEffect.h"
+#include "BlasterHitRules.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarShotDebug(TEXT("blaster.DebugShots"), 0, TEXT("Draw aim and muzzle blockers"));
+
+void UCombatComponent::ClientConfirmHit_Implementation(bool bHeadshot)
+{
+	HitFeedback = 0.25f;
+	bLastHeadshot = bHeadshot;
+	if (Character) if (auto* PC = Cast<ABlasterPlayerController>(Character->GetController())) PC->ClientFeedback(bHeadshot ? 1 : 0);
+}
+
+bool UCombatComponent::IsMuzzleBlocked(FHitResult& Hit) const
+{
+	if (!IsValid(Character) || !IsValid(EquippedWeapon)) return false;
+	const FVector Muzzle = EquippedWeapon->GetWeaponMesh()->GetSocketLocation(TEXT("Muzzle"));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BlasterClearance), false, Character);
+	Params.AddIgnoredActor(EquippedWeapon);
+	if (IsValid(SecondaryWeapon)) Params.AddIgnoredActor(SecondaryWeapon);
+	return GetWorld()->LineTraceSingleByChannel(Hit, Character->GetPawnViewLocation(), Muzzle, BlasterHit::Channel, Params);
+}
 
 UCombatComponent::UCombatComponent()
 {
@@ -54,6 +76,7 @@ void UCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	if (!IsValid(Character) || !Character->IsLocallyControlled() || !Character->GetFollowCamera()) return;
+	HitFeedback = FMath::Max(0.f, HitFeedback - DeltaTime);
 	UCameraComponent* Camera = Character->GetFollowCamera();
 	if (DefaultFOV <= 0.f) DefaultFOV = Camera->FieldOfView;
 	const float TargetFOV = bAiming && IsValid(EquippedWeapon) ? 60.f : DefaultFOV;
@@ -209,7 +232,14 @@ FVector UCombatComponent::TraceAim(FHitResult& Hit) const
 	const FVector End = Start + Direction * 80000.f;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BlasterAim), false, Character);
 	if (IsValid(EquippedWeapon)) Params.AddIgnoredActor(EquippedWeapon);
-	GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+	if (IsValid(SecondaryWeapon)) Params.AddIgnoredActor(SecondaryWeapon);
+	GetWorld()->LineTraceSingleByChannel(Hit, Start, End, BlasterHit::Channel, Params);
+	if (CVarShotDebug.GetValueOnGameThread())
+	{
+		DrawDebugLine(GetWorld(), Start, Hit.bBlockingHit ? Hit.ImpactPoint : End, FColor::Yellow, false, 0.f);
+		if (Hit.bBlockingHit) DrawDebugString(GetWorld(), Hit.ImpactPoint, FString::Printf(TEXT("%s / %s / %s [WeaponTrace]"),
+			*GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), *Hit.BoneName.ToString()), nullptr, FColor::White, 0.f);
+	}
 	return Hit.bBlockingHit ? Hit.ImpactPoint : End;
 }
 
@@ -239,8 +269,7 @@ void UCombatComponent::ServerFire_Implementation(FVector_NetQuantize HitTarget, 
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BlasterMuzzle), false, Character);
 	Params.AddIgnoredActor(EquippedWeapon);
 	FHitResult Obstruction;
-	if (GetWorld()->LineTraceSingleByChannel(Obstruction, Character->GetPawnViewLocation(), Muzzle,
-		ECC_Visibility, Params)) return;
+	if (IsMuzzleBlocked(Obstruction)) return;
 	TArray<FVector_NetQuantize> PelletEnds;
 	if (EquippedWeapon->GetFireModel() == EFireModel::Projectile)
 	{
@@ -256,27 +285,37 @@ void UCombatComponent::ServerFire_Implementation(FVector_NetQuantize HitTarget, 
 		bool bHeadshot = false;
 		if (ULagCompensationComponent::ConfirmHit(GetWorld(), Character, Muzzle,
 			Muzzle + ToTarget.GetSafeNormal() * 80000.f, ShotTime, Victim, bHeadshot))
-			UGameplayStatics::ApplyDamage(Victim, bHeadshot ? 40.f : 20.f, Character->GetController(), EquippedWeapon, UDamageType::StaticClass());
+		{
+			const float Applied = UGameplayStatics::ApplyDamage(Victim, BlasterHit::Damage(EquippedWeapon->GetBodyDamage(), EquippedWeapon->GetHeadMultiplier(), bHeadshot), Character->GetController(), EquippedWeapon, UDamageType::StaticClass());
+			if (Applied > 0.f) ClientConfirmHit(bHeadshot);
+		}
 	}
 	else
 	{
 		const bool bShotgun = EquippedWeapon->GetFireModel() == EFireModel::Shotgun;
 		const int32 Pellets = bShotgun ? 8 : 1;
 		TMap<AActor*, float> DamageByActor;
+		bool bAnyHead = false;
 		for (int32 Pellet = 0; Pellet < Pellets; ++Pellet)
 		{
 			const FVector Direction = bShotgun
 				? FMath::VRandCone(ToTarget.GetSafeNormal(), FMath::DegreesToRadians(2.f)) : ToTarget.GetSafeNormal();
 			FHitResult Hit;
-			GetWorld()->LineTraceSingleByChannel(Hit, Muzzle, Muzzle + Direction * 80000.f, ECC_Visibility, Params);
+			GetWorld()->LineTraceSingleByChannel(Hit, Muzzle, Muzzle + Direction * 80000.f, BlasterHit::Channel, Params);
 			PelletEnds.Add(Hit.bBlockingHit ? Hit.ImpactPoint : Muzzle + Direction * 80000.f);
-			if (IsValid(Hit.GetActor())) DamageByActor.FindOrAdd(Hit.GetActor()) += bShotgun ? 4.f : 20.f;
+			if (auto* Victim = Cast<ABlasterCharacter>(Hit.GetActor()); Victim && !Victim->IsEliminated())
+			{
+				const bool bHead = BlasterHit::IsHead(Hit.BoneName);
+				bAnyHead |= bHead;
+				DamageByActor.FindOrAdd(Victim) += BlasterHit::Damage(EquippedWeapon->GetBodyDamage(), EquippedWeapon->GetHeadMultiplier(), bHead);
+			}
 		}
 		for (const auto& Damage : DamageByActor)
 		{
 			if (IsValid(Damage.Key))
 				UGameplayStatics::ApplyDamage(Damage.Key, Damage.Value, Character->GetController(), EquippedWeapon, UDamageType::StaticClass());
 		}
+		if (!DamageByActor.IsEmpty()) ClientConfirmHit(bAnyHead);
 	}
 	EquippedWeapon->SpendRound();
 	// Allow one frame of arrival jitter without allowing the long-term cadence to drift faster.
@@ -323,7 +362,7 @@ void UCombatComponent::MulticastFire_Implementation(FVector_NetQuantize MuzzleLo
 		FVector End = FVector(MuzzleLocation) + Ray * (Model == EFireModel::Projectile ? 400.f : 6000.f);
 		if (Model == EFireModel::Shotgun && FVector::DistSquared(MuzzleLocation, PelletEnds[Index]) < FMath::Square(6000.f)) End = PelletEnds[Index];
 		FHitResult VisualHit;
-		if (GetWorld()->LineTraceSingleByChannel(VisualHit, MuzzleLocation, End, ECC_Visibility, Params)) End = VisualHit.ImpactPoint;
+		if (GetWorld()->LineTraceSingleByChannel(VisualHit, MuzzleLocation, End, BlasterHit::Channel, Params)) End = VisualHit.ImpactPoint;
 		ABlasterShotEffect::Beam(GetWorld(), MuzzleLocation, End, Glow, Model == EFireModel::Shotgun ? 2.5f : 4.f, 0.16f);
 		if (Model != EFireModel::Projectile && VisualHit.bBlockingHit)
 			ABlasterShotEffect::Beam(GetWorld(), End, End + VisualHit.ImpactNormal * 5.f, Glow, 9.f, 0.16f);

@@ -12,7 +12,10 @@ public:
 	void AddDefeat();
 	void ResetRoundStats();
 	int32 GetDefeats() const { return Defeats; }
+	bool IsReady() const { return bReady; }
+	void SetReady(bool Value) { if (HasAuthority()) { bReady = Value; ForceNetUpdate(); } }
 private:
+	UPROPERTY(Replicated) bool bReady = false;
 	UPROPERTY(Replicated, VisibleInstanceOnly, Category = Stats)
 	int32 Defeats = 0;
 };

@@ -70,6 +70,8 @@ protected:
 
 private:
 	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<class UInventoryComponent> Inventory;
+	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<class ULagCompensationComponent> LagCompensation;
 	UPROPERTY(Replicated, VisibleInstanceOnly, Category = Stats)
 	float Health = 100.f;
